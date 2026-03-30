@@ -1,6 +1,67 @@
+
+
+
+// แก้ไขส่วนหัวไฟล์
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co'; 
 const supabaseKey = 'sb_publishable_Qr_sjmM-sZoncdNt2Iluqg_OMYbRn8Y'; 
 const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
+
+// ฟังก์ชัน Login
+async function doLogin() {
+    const u = document.getElementById('login-username').value.trim();
+    const p = document.getElementById('login-password').value;
+
+    if (!u || !p) {
+        showToast('กรุณากรอกข้อมูลให้ครบ', 'error');
+        return;
+    }
+
+    // ปั่นรหัสเป็นตัวเล็ก (LowerCase Hex)
+    const hashedPass = CryptoJS.SHA256(p).toString().toLowerCase();
+
+    try {
+        const { data: found, error } = await supabaseClient
+            .from('users')
+            .select('*')
+            .eq('username', u)
+            .eq('password', hashedPass)
+            .single();
+
+        if (error || !found) {
+            document.getElementById('login-error').style.display = 'block';
+            return;
+        }
+
+        currentUser = found;
+        ls(SESSION_KEY, found.id);
+        
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+        initApp();
+        showToast('ยินดีต้อนรับคุณ ' + found.name, 'success');
+
+    } catch (err) {
+        console.error('Login Error:', err);
+        showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ', 'error');
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ==================== DATA STORE ====================
 const USERS_KEY = 'edms_users';
