@@ -51,7 +51,6 @@ function fmtSize(b) {
         return (b/1024/1024).toFixed(1) + ' MB';
 }
 
-// ==================== SESSION (SQL VERSION) ====================
 async function doLogin() {
     const u = document.getElementById('login-username').value.trim();
     const p = document.getElementById('login-password').value;
@@ -60,10 +59,14 @@ async function doLogin() {
         showToast('กรุณากรอกข้อมูลให้ครบ', 'error');
         return;
     }
+
+    // --- [เริ่มการทำงาน] เปิด Loading ---
+    toggleLoading(true, 'กำลังเข้าสู่ระบบ...'); 
+
     const hashedPass = CryptoJS.SHA256(p).toString();
-        
+
     try {
-                const { data: found, error } = await supabaseClient
+        const { data: found, error } = await supabaseClient
             .from('users')
             .select('*')
             .eq('username', u)
@@ -71,26 +74,30 @@ async function doLogin() {
             .single();
 
         if (error || !found) {
+            // --- [ผิดพลาด] ปิด Loading ก่อนแจ้งเตือน ---
+            toggleLoading(false); 
             document.getElementById('login-error').style.display = 'block';
             addLog('login_fail', u, 'พยายามเข้าสู่ระบบแต่รหัสผิด');
             return;
         }
 
-      showLoading('กำลังเข้าสู่ระบบ...');
         currentUser = found;
         ls(SESSION_KEY, found.id);
-        
         addLog('login', found.username, 'เข้าสู่ระบบสำเร็จ (Cloud SQL)');
         
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('app').style.display = 'block';
         initApp();
         showToast('ยินดีต้อนรับคุณ ' + found.name, 'success');
-    
+
+        // --- [สำเร็จ] ปิด Loading เมื่อหน้าจอเปลี่ยนแล้ว ---
+        toggleLoading(false); 
+
     } catch (err) {
+        // --- [พัง] ปิด Loading ถ้าการเชื่อมต่อมีปัญหา ---
+        toggleLoading(false); 
         console.error('Login Error:', err);
         showToast('เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล', 'error');
-        hideLoading();
     }
 }
 function doLogout() {
@@ -1220,3 +1227,16 @@ document.getElementById('login-username').addEventListener('keydown', e => {
 initData();
 checkSession().catch(console.error);
 
+// ฟังก์ชัน เปิด-ปิด Loading
+function toggleLoading(show, text = 'กำลังตรวจสอบสิทธิ์...') {
+    let overlay = document.getElementById('global-loading');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'global-loading';
+        overlay.className = 'loading-overlay';
+        overlay.innerHTML = `<div class="spinner"></div><div class="loading-text" id="loading-msg"></div>`;
+        document.body.appendChild(overlay);
+    }
+    document.getElementById('loading-msg').textContent = text;
+    overlay.style.display = show ? 'flex' : 'none';
+}
