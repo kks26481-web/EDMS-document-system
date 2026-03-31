@@ -124,11 +124,37 @@ async function checkSession() {
 }
 
 // ==================== LOG ====================
-function addLog(type, user, action) {
-    const logs = getJSON(LOGS_KEY);
-        logs.unshift({ id: uid(), type, user, action, time: now() });
-        if (logs.length > 500) logs.splice(500);
-        setJSON(LOGS_KEY, logs);
+// บันทึก Log ลง Cloud
+async function addLog(type, user, action) {
+    await supabaseClient.from('logs').insert([{ type, user_name: user, action }]);
+}
+
+// ดึง Log จาก Cloud มาแสดง
+async function renderLogs() {
+    const { data: logs, error } = await supabaseClient
+        .from('logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+    let html = `<div class="card">
+        <div class="card-header"><div class="card-title">📝 บันทึกการใช้งานระบบ</div></div>`;
+    
+    if (error || !logs.length) {
+        html += `<div class="empty-state">ยังไม่มีบันทึก</div>`;
+    } else {
+        html += `<div style="max-height:600px;overflow-y:auto;">`;
+        logs.forEach(l => {
+            const icons = { login:'🔑', upload:'📤', download:'⬇', delete:'🗑' };
+            html += `<div class="log-entry">
+                <span class="log-time">${fmtDate(l.created_at)}</span>
+                <span class="log-user">${escHtml(l.user_name)}</span>
+                <span class="log-action">${icons[l.type]||'•'} ${escHtml(l.action)}</span>
+            </div>`;
+        });
+        html += `</div>`;
+    }
+    document.getElementById('page-content').innerHTML = html + `</div>`;
 }
 
 // ==================== APP INIT ====================
@@ -219,64 +245,42 @@ function closeSidebar() {
         document.getElementById('sidebar-overlay').classList.remove('show');
 }
 
-// ==================== HOME ====================
-function renderHome() {
+async function renderHome() {
     const isAdmin = currentUser.role === 'admin';
-    const anns = getJSON(ANN_KEY);
+    const { data: anns, error } = await supabaseClient.from('announcements').select('*').order('created_at', { ascending: false });
+
     let html = `<div class="card">
         <div class="card-header">
             <div class="card-title">📢 ประกาศและข่าวสาร</div>
-                ${isAdmin ? `<button class="btn btn-sm" onclick="showAddAnn()">+ เพิ่มประกาศ</button>` : ''}
+            ${isAdmin ? `<button class="btn btn-sm" onclick="showAddAnn()">+ เพิ่มประกาศ</button>` : ''}
         </div>`;
-            if (anns.length === 0) {
-            html += `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">ยังไม่มีประกาศ</div></div>`;
-            }
+
+    if (error || !anns.length) {
+        html += `<div class="empty-state">ยังไม่มีประกาศ</div>`;
+    } else {
         anns.forEach(a => {
             html += `<div class="announcement-item">
-                        <span class="ann-icon">📌</span>
-                    <div style="flex:1">
-                    <div class="ann-text">${escHtml(a.text)}</div>`;
-            if (a.files && a.files.length > 0) {
-            a.files.forEach(f => {
-                    html += `<span class="ann-file-badge" onclick="previewFile('${f.id}')">
-                        📎 ${escHtml(f.name)}
-                    </span>`;
-            });
-            }
-
-            if (isAdmin) {
-                html += `<div style="margin-top:8px;display:flex;gap:6px;">
-                <button class="btn btn-outline btn-xs" onclick="editAnn('${a.id}')">✏️ แก้ไข</button>
-                <button class="btn btn-outline btn-xs" onclick="addAnnFile('${a.id}')">📎 แนบไฟล์</button>
-                <button class="btn btn-danger btn-xs" onclick="deleteAnn('${a.id}')">🗑 ลบ</button>
-                </div>`;
-            }
-
-                `</div><div class="ann-date">${fmtDateShort(a.date)}</div></div>`;
+                <div style="flex:1">
+                    <div class="ann-text">${escHtml(a.text)}</div>
+                    ${isAdmin ? `<button class="btn btn-danger btn-xs" onclick="deleteAnn('${a.id}')">🗑 ลบ</button>` : ''}
+                </div>
+                <div class="ann-date">${fmtDateShort(a.created_at)}</div>
+            </div>`;
         });
-                html += `</div>`;
-                document.getElementById('page-content').innerHTML = html;
+    }
+    document.getElementById('page-content').innerHTML = html + `</div>`;
 }
 
 function showAddAnn() {
-    showModal('เพิ่มประกาศ',
-    `<div class="form-group"><label>ข้อความประกาศ</label>
-        <textarea id="ann-text" rows="4" style="width:100%;padding:10px;border:1px solid var(--border2);border-radius:var(--radius);font-family:inherit;font-size:14px;resize:vertical;outline:none;"
-        placeholder="กรอกข้อความประกาศ..."></textarea></div>`,
-        [
-            { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
-            { text: 'บันทึก', fn: () => {
+    showModal('เพิ่มประกาศ', `<textarea id="ann-text" rows="4" style="width:100%"></textarea>`, [
+        { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
+        { text: 'บันทึก', fn: async () => {
             const t = document.getElementById('ann-text').value.trim();
-            if (!t) { showToast('กรุณากรอกข้อความ', 'error'); return; }
-            const anns = getJSON(ANN_KEY);
-            anns.unshift({ id: uid(), text: t, date: now(), files: [] });
-            setJSON(ANN_KEY, anns);
-            addLog('create', currentUser.username, 'เพิ่มประกาศ: ' + t.slice(0, 40));
+            if (!t) return;
+            await supabaseClient.from('announcements').insert([{ text: t, author: currentUser.username }]);
             closeModal(); renderHome();
-            showToast('เพิ่มประกาศสำเร็จ', 'success');
-            }}
-        ]
-    );
+        }}
+    ]);
 }
 
 function editAnn(id) {
@@ -374,57 +378,40 @@ async function getCloudFiles(section, folder, subfolder) {
     return error ? [] : files;
 }
 
-// ==================== DEPT ====================
 async function renderDept(folder, subfolder) {
-    const files = await getCloudFiles('dept', folder, subfolder);
-    const deptFolders = folders.dept || [];
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
+    
+    // รายชื่อฝ่าย (แก้ไขเพิ่ม/ลดตรงนี้ได้เลย)
+    const depts = ['HR', 'IT', 'Finance', 'Logistics', 'Sales'];
 
     if (!folder) {
-    let html = ``;
-    if (isAdmin) {
-        html += `<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px;">
-            <button class="btn" onclick="showAddFolder('dept')">+ เพิ่มโฟลเดอร์</button>
-        </div>`;
-    }
-            html += `<div class="folder-grid">`;
-            deptFolders.forEach(f => {
-                const count = getJSON(FILES_KEY).filter(x => x.section === 'dept' && x.folder === f).length;
-                    html += `<div class="folder-card" onclick="navigate('dept','${f}')">
-                        ${isAdmin ? `<button class="folder-delete" onclick="event.stopPropagation();deleteFolder('dept','${f}')">✕</button>` : ''}
-                            <div class="folder-icon"><i class="fa-solid fa-folder"></i></div>
-                            <div class="folder-name">ฝ่าย ${f}</div>
-                            <div class="folder-count">${count} ไฟล์</div>
+        let html = `<div class="folder-grid">`;
+        depts.forEach(f => {
+            html += `<div class="folder-card" onclick="navigate('dept','${f}')">
+                <div class="folder-icon"><i class="fa-solid fa-folder"></i></div>
+                <div class="folder-name">ฝ่าย ${f}</div>
             </div>`;
         });
-        html += `</div>`;
-        content.innerHTML = html;
+        content.innerHTML = html + `</div>`;
     } else {
+        // ดึงไฟล์จาก Cloud (ใช้ฟังก์ชัน getCloudFiles ที่เราสร้างไว้ก่อนหน้า)
+        const files = await getCloudFiles('dept', folder, subfolder);
+        const DOC_TYPES = ['ทั้งหมด', 'FR', 'WI', 'JD', 'SP', 'SD'];
+        let activeFilter = subfolder || 'ทั้งหมด';
 
-                // Inside folder
-                const files = getJSON(FILES_KEY).filter(x => x.section === 'dept' && x.folder === folder);
-                const DOC_TYPES = ['ทั้งหมด', 'FR', 'WI', 'JD', 'SP', 'SD'];
-                let activeFilter = subfolder || 'ทั้งหมด';
-                let html = `<div class="breadcrumb">
-                    <a onclick="navigate('dept')">📂 เอกสารฝ่ายต่างๆ</a>
-                    <span class="sep">›</span>
-                    <span class="current">ฝ่าย ${folder}</span>
-                </div>`;
-
-                    html += `<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
-                                <div class="filter-row" style="margin-bottom:0">`;
-                                    DOC_TYPES.forEach(t => {
-                                        html += `<button class="filter-btn ${t===activeFilter?'active':''}" onclick="navigate('dept','${folder}','${t}')">${t}</button>`;
-                                    });
-                                html += `</div>`;
-                                    if (isAdmin) {
-                                    html += `<button class="btn btn-sm" onclick="showUploadModal('dept','${folder}')">+ อัพโหลดไฟล์</button>`;
-                                    }
-                    html += `</div>`;
-                        const filtered = activeFilter === 'ทั้งหมด' ? files : files.filter(f => f.docType === activeFilter);
-                    html += renderFileTable(filtered, isAdmin);
-                    content.innerHTML = html;
+        let html = `<div class="breadcrumb">
+            <a onclick="navigate('dept')">📂 เอกสารฝ่ายต่างๆ</a> <span class="sep">›</span> <span>ฝ่าย ${folder}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+            <div class="filter-row">
+                ${DOC_TYPES.map(t => `<button class="filter-btn ${t===activeFilter?'active':''}" onclick="navigate('dept','${folder}','${t}')">${t}</button>`).join('')}
+            </div>
+            ${isAdmin ? `<button class="btn btn-sm" onclick="showUploadModal('dept','${folder}')">+ อัพโหลดไฟล์</button>` : ''}
+        </div>`;
+        
+        html += renderFileTable(files, isAdmin);
+        content.innerHTML = html;
     }
 }
 
@@ -908,27 +895,23 @@ async function deleteFile(id) {
 }
 
 // ==================== GLOBAL SEARCH ====================
-function globalSearch(q) {
-  if (!q.trim()) return;
-  q = q.toLowerCase();
-  const files = getJSON(FILES_KEY).filter(f =>
-    f.name.toLowerCase().includes(q) ||
-    (f.folder || '').toLowerCase().includes(q) ||
-    (f.docType || '').toLowerCase().includes(q)
-  );
-  
-  const isAdmin = currentUser.role === 'admin';
-  document.getElementById('page-title').textContent = `ผลการค้นหา: "${q}"`;
-  const content = document.getElementById('page-content');
+async function globalSearch(q) {
+    if (!q.trim()) return;
+    const searchTerm = q.toLowerCase();
+    const isAdmin = currentUser.role === 'admin';
+    const content = document.getElementById('page-content');
 
-  if (files.length === 0) {
-    content.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">ไม่พบไฟล์ที่ตรงกัน</div></div>`;
-    return;
-  }
+    const { data: files, error } = await supabaseClient
+        .from('files')
+        .select('*')
+        .or(`name.ilike.%${searchTerm}%,folder.ilike.%${searchTerm}%,doc_type.ilike.%${searchTerm}%`);
 
-  let html = `<div style="margin-bottom:12px;font-size:13px;color:var(--text3);">พบ ${files.length} ไฟล์</div>`;
-  html += renderFileTable(files, isAdmin);
-  content.innerHTML = html;
+    document.getElementById('page-title').textContent = `ผลการค้นหา: "${q}"`;
+    if (error || !files.length) {
+        content.innerHTML = `<div class="empty-state">ไม่พบไฟล์</div>`;
+    } else {
+        content.innerHTML = `<div style="margin-bottom:12px;">พบ ${files.length} ไฟล์</div>` + renderFileTable(files, isAdmin);
+    }
 }
 
 // ==================== USERS (SQL VERSION) ====================
