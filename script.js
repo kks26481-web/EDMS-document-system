@@ -378,33 +378,74 @@ async function getCloudFiles(section, folder, subfolder) {
     return error ? [] : files;
 }
 
+// ==================== DEPT (SQL + DYNAMIC COUNT) ====================
 async function renderDept(folder, subfolder) {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    
-    // รายชื่อฝ่าย (แก้ไขเพิ่ม/ลดตรงนี้ได้เลย)
-    const depts = ['HR', 'IT', 'Finance', 'Logistics', 'Sales'];
+    content.innerHTML = '<div class="loading">⏳ กำลังคำนวณข้อมูล...</div>';
 
     if (!folder) {
-        let html = `<div class="folder-grid">`;
-        depts.forEach(f => {
-            html += `<div class="folder-card" onclick="navigate('dept','${f}')">
-                <div class="folder-icon"><i class="fa-solid fa-folder"></i></div>
-                <div class="folder-name">ฝ่าย ${f}</div>
-            </div>`;
-        });
-        content.innerHTML = html + `</div>`;
+        try {
+            // 1. ดึงรายชื่อโฟลเดอร์จากตาราง folders
+            const { data: deptFolders, error: folderErr } = await supabaseClient
+                .from('folders')
+                .select('*')
+                .eq('section', 'dept')
+                .order('name');
+
+            // 2. ดึงข้อมูลไฟล์ทั้งหมดในส่วน 'dept' มานับจำนวน
+            const { data: allFiles, error: fileErr } = await supabaseClient
+                .from('files')
+                .select('folder')
+                .eq('section', 'dept');
+
+            if (folderErr || fileErr) throw folderErr || fileErr;
+
+            let html = '';
+            if (isAdmin) {
+                html += `<div style="display:flex;justify-content:flex-end;margin-bottom:16px;">
+                    <button class="btn" onclick="showAddFolder('dept')">+ เพิ่มฝ่าย/แผนก</button>
+                </div>`;
+            }
+
+            html += `<div class="folder-grid">`;
+            
+            if (deptFolders && deptFolders.length > 0) {
+                deptFolders.forEach(f => {
+                    // นับจำนวนไฟล์ที่อยู่ในโฟลเดอร์นี้
+                    const fileCount = allFiles.filter(file => file.folder === f.name).length;
+
+                    html += `
+                    <div class="folder-card" onclick="navigate('dept','${f.name}')">
+                        ${isAdmin ? `<button class="folder-delete" onclick="event.stopPropagation();deleteFolder('${f.id}','${f.name}','dept')">✕</button>` : ''}
+                        <div class="folder-icon"><i class="fa-solid fa-folder"></i></div>
+                        <div class="folder-name">ฝ่าย ${f.name}</div>
+                        <div class="folder-count">${fileCount} ไฟล์</div>
+                    </div>`;
+                });
+            } else {
+                html += `<div class="empty-state">ยังไม่มีการเพิ่มรายชื่อฝ่าย</div>`;
+            }
+            
+            content.innerHTML = html + `</div>`;
+
+        } catch (err) {
+            showToast('เกิดข้อผิดพลาดในการดึงข้อมูล', 'error');
+            console.error(err);
+        }
     } else {
-        // ดึงไฟล์จาก Cloud (ใช้ฟังก์ชัน getCloudFiles ที่เราสร้างไว้ก่อนหน้า)
+        // เมื่อคลิกเข้าไปในโฟลเดอร์
         const files = await getCloudFiles('dept', folder, subfolder);
         const DOC_TYPES = ['ทั้งหมด', 'FR', 'WI', 'JD', 'SP', 'SD'];
         let activeFilter = subfolder || 'ทั้งหมด';
 
         let html = `<div class="breadcrumb">
-            <a onclick="navigate('dept')">📂 เอกสารฝ่ายต่างๆ</a> <span class="sep">›</span> <span>ฝ่าย ${folder}</span>
+            <a onclick="navigate('dept')">📂 เอกสารฝ่ายต่างๆ</a> 
+            <span class="sep">›</span> 
+            <span class="current">ฝ่าย ${folder}</span>
         </div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
-            <div class="filter-row">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
+            <div class="filter-row" style="margin-bottom:0">
                 ${DOC_TYPES.map(t => `<button class="filter-btn ${t===activeFilter?'active':''}" onclick="navigate('dept','${folder}','${t}')">${t}</button>`).join('')}
             </div>
             ${isAdmin ? `<button class="btn btn-sm" onclick="showUploadModal('dept','${folder}')">+ อัพโหลดไฟล์</button>` : ''}
@@ -480,90 +521,65 @@ function renderCentral() {
   document.getElementById('page-content').innerHTML = html;
 }
 
-// ==================== CAR / AUDIT ====================
-function renderYearFolder(section, year) {
-  const folders = getJSON(FOLDERS_KEY);
-  const years = folders[section] || [];
-  const isAdmin = currentUser.role === 'admin';
-  const content = document.getElementById('page-content');
-  const sectionName = section === 'car' ? 'เอกสาร CAR' : 'เอกสารการตรวจติดตาม';
+// ==================== CAR / AUDIT (SQL VERSION) ====================
+async function renderYearFolder(section, year) {
+    const isAdmin = currentUser.role === 'admin';
+    const content = document.getElementById('page-content');
+    content.innerHTML = '<div class="loading">⏳ กำลังโหลด...</div>';
 
-  if (!year) {
-    let html = '';
-    if (isAdmin) {
-      html += `<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px;">
-        <button class="btn" onclick="showAddFolder('${section}')">+ เพิ่มปี</button>
-      </div>`;
+    if (!year) {
+        try {
+            // ดึงชื่อปีจาก Cloud
+            const { data: years, error: yErr } = await supabaseClient
+                .from('folders')
+                .select('*')
+                .eq('section', section)
+                .order('name', { ascending: false });
+
+            // ดึงจำนวนไฟล์
+            const { data: allFiles, error: fErr } = await supabaseClient
+                .from('files')
+                .select('folder')
+                .eq('section', section);
+
+            if (yErr || fErr) throw yErr;
+
+            let html = '';
+            if (isAdmin) {
+                html += `<div style="display:flex;justify-content:flex-end;margin-bottom:16px;">
+                    <button class="btn" onclick="showAddFolder('${section}')">+ เพิ่มปีพุทธศักราช</button>
+                </div>`;
+            }
+
+            html += `<div class="folder-grid">`;
+            years.forEach(y => {
+                const count = allFiles.filter(f => f.folder === y.name).length;
+                html += `
+                <div class="folder-card" onclick="navigate('${section}','${y.name}')">
+                    ${isAdmin ? `<button class="folder-delete" onclick="event.stopPropagation();deleteFolder('${y.id}','${y.name}','${section}')">✕</button>` : ''}
+                    <div class="folder-icon">📅</div>
+                    <div class="folder-name">${y.name}</div>
+                    <div class="folder-count">${count} ไฟล์</div>
+                </div>`;
+            });
+            content.innerHTML = html + `</div>`;
+        } catch (err) { console.error(err); }
+    } else {
+        const files = await getCloudFiles(section, year);
+        let html = `<div class="breadcrumb">
+            <a onclick="navigate('${section}')">${section === 'car' ? 'เอกสาร CAR' : 'เอกสารการตรวจติดตาม'}</a>
+            <span class="sep">›</span> <span class="current">${year}</span>
+        </div>`;
+        if (isAdmin) {
+            html += `<div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+                <button class="btn btn-sm" onclick="showUploadModal('${section}','${year}')">+ อัพโหลดไฟล์</button>
+            </div>`;
+        }
+        html += renderFileTable(files, isAdmin);
+        content.innerHTML = html;
     }
-    html += `<div class="folder-grid">`;
-    years.forEach(y => {
-      const count = getJSON(FILES_KEY).filter(x => x.section === section && x.folder === y).length;
-      html += `<div class="folder-card" onclick="navigate('${section}','${y}')">
-        ${isAdmin ? `<button class="folder-delete" onclick="event.stopPropagation();deleteFolder('${section}','${y}')">✕</button>` : ''}
-        <div class="folder-icon">📅</div>
-        <div class="folder-name">${y}</div>
-        <div class="folder-count">${count} ไฟล์</div>
-      </div>`;
-    });
-    html += `</div>`;
-    content.innerHTML = html;
-  } else {
-    const files = getJSON(FILES_KEY).filter(x => x.section === section && x.folder === year);
-    let html = `<div class="breadcrumb">
-      <a onclick="navigate('${section}')">${section === 'car' ? 'เอกสาร CAR' : 'เอกสารการตรวจติดตาม'}</a>
-      <span class="sep">›</span>
-      <span class="current">${year}</span>
-    </div>`;
-    if (isAdmin) {
-      html += `<div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-        <button class="btn btn-sm" onclick="showUploadModal('${section}','${year}')">+ อัพโหลดไฟล์</button>
-      </div>`;
-    }
-    html += renderFileTable(files, isAdmin);
-    content.innerHTML = html;
-  }
 }
 
-// ==================== FOLDER MANAGEMENT ====================
-function showAddFolder(section) {
-  const label = section === 'dept' ? 'ชื่อโฟลเดอร์ฝ่าย' : 'ปี (เช่น 2570)';
-  showModal('เพิ่ม' + (section==='dept' ? 'โฟลเดอร์' : 'ปี'),
-    `<div class="form-group"><label>${label}</label>
-     <input type="text" id="new-folder-name" placeholder="${label}"></div>`,
-    [
-      { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
-      { text: 'เพิ่ม', fn: () => {
-        const name = document.getElementById('new-folder-name').value.trim();
-        if (!name) { showToast('กรุณากรอกชื่อ', 'error'); return; }
-        const folders = getJSON(FOLDERS_KEY);
-        if (!folders[section]) folders[section] = [];
-        if (folders[section].includes(name)) { showToast('มีชื่อนี้แล้ว', 'error'); return; }
-        folders[section].push(name);
-        setJSON(FOLDERS_KEY, folders);
-        addLog('create', currentUser.username, `เพิ่มโฟลเดอร์ ${section}: ${name}`);
-        closeModal();
-        navigate(section === 'dept' ? 'dept' : section);
-        showToast('เพิ่มสำเร็จ', 'success');
-      }}
-    ]
-  );
-}
-
-function deleteFolder(section, name) {
-  const files = getJSON(FILES_KEY).filter(x => x.section === section && x.folder === name);
-  if (files.length > 0 && !confirm(`โฟลเดอร์นี้มีไฟล์ ${files.length} ไฟล์ ยืนยันลบ?`)) return;
-  if (files.length === 0 && !confirm(`ลบโฟลเดอร์ "${name}"?`)) return;
-  
-  const folders = getJSON(FOLDERS_KEY);
-  folders[section] = (folders[section] || []).filter(x => x !== name);
-  setJSON(FOLDERS_KEY, folders);
-  
-  const allFiles = getJSON(FILES_KEY).filter(x => !(x.section === section && x.folder === name));
-  setJSON(FILES_KEY, allFiles);
-  addLog('delete', currentUser.username, `ลบโฟลเดอร์ ${section}: ${name}`);
-  navigate(section === 'dept' ? 'dept' : section);
-  showToast('ลบสำเร็จ', 'success');
-}
 
 // ==================== UPLOAD ====================
 let pendingFiles = [];
