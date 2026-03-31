@@ -61,7 +61,7 @@ async function doLogin() {
         return;
     }
     const hashedPass = CryptoJS.SHA256(p).toString();
-        showLoading('กำลังเข้าสู่ระบบ...');
+        
     try {
                 const { data: found, error } = await supabaseClient
             .from('users')
@@ -76,7 +76,7 @@ async function doLogin() {
             return;
         }
 
-      
+      showLoading('กำลังเข้าสู่ระบบ...');
         currentUser = found;
         ls(SESSION_KEY, found.id);
         
