@@ -409,7 +409,7 @@ async function getCloudFiles(section, folder, subfolder) {
 async function renderDept(folder, subfolder) {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    content.innerHTML = '<div class="loading">⏳ กำลังโหลดไฟล์iv>';
+    content.innerHTML = '<div class="loading">⏳ กำลังโหลดไฟล์ ...</div>';
 
     if (!folder) {
         try {
@@ -564,7 +564,7 @@ async function renderYearFolder(section, year) {
             let html = '';
             if (isAdmin) {
                 html += `<div style="display:flex;justify-content:flex-end;margin-bottom:16px;">
-                    <button class="btn" onclick="showAddFolder('${section}')">+ เพิ่มปีพุทธศักราช</button>
+                    <button class="btn" onclick="showAddFolder('${section}')">+ เพิ่มปี พ.ศ.</button>
                 </div>`;
             }
 
