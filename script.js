@@ -112,8 +112,18 @@ function doLogout() {
 
 async function checkSession() {
     const sid = ls(SESSION_KEY);
-    if (sid) {
-               const { data: found, error } = await supabaseClient
+    
+    // 1. ถ้าไม่มี Session ID ในเครื่อง ให้โชว์หน้า Login ทันทีแล้วจบการทำงาน
+    if (!sid) {
+        document.getElementById('login-screen').style.display = 'flex';
+        return;
+    }
+
+    // 2. [เริ่มการทำงาน] ถ้ามี Session ID ให้เปิด Loading ทันทีเพื่อกันหน้า Login โผล่
+    toggleLoading(true, 'กำลังกู้คืนการเชื่อมต่อ...');
+
+    try {
+        const { data: found, error } = await supabaseClient
             .from('users')
             .select('*')
             .eq('id', sid)
@@ -124,12 +134,22 @@ async function checkSession() {
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('app').style.display = 'block';
             initApp();
+            
+            // 3. [สำเร็จ] ปิด Loading เมื่อหน้า App หลักพร้อมโชว์แล้ว
+            toggleLoading(false); 
         } else {
+            // กรณีมี ID แต่ข้อมูลใน Cloud ไม่ตรง (เช่น ถูกลบ)
             ls(SESSION_KEY, ''); 
+            document.getElementById('login-screen').style.display = 'flex';
+            toggleLoading(false); // ปิด Loading เพื่อให้ล็อกอินใหม่
         }
+    } catch (err) {
+        console.error('Session Error:', err);
+        ls(SESSION_KEY, '');
+        toggleLoading(false);
+        document.getElementById('login-screen').style.display = 'flex';
     }
 }
-
 // ==================== LOG ====================
 // บันทึก Log ลง Cloud
 async function addLog(type, user, action) {

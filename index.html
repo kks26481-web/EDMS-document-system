@@ -15,7 +15,7 @@
 <body>
 
 <!-- LOGIN -->
-<div id="login-screen">
+<div id="login-screen" style="display: none;">
   <div class="login-box">
     <div class="login-logo">
       <div class="sidebar-logo">ED<span>MS</span></div>
@@ -111,5 +111,9 @@
 <!-- TOAST -->
 <div id="toast-container"></div>
 <script src="script.js"> </script>
+<div id="global-loading" class="loading-overlay" style="display: none;">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-msg">กำลังโหลดข้อมูล...</div>
+</div>
 </body>
 </html>
