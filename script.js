@@ -60,9 +60,8 @@ async function doLogin() {
         showToast('กรุณากรอกข้อมูลให้ครบ', 'error');
         return;
     }
-
     const hashedPass = CryptoJS.SHA256(p).toString();
-
+        showLoading('กำลังเข้าสู่ระบบ...');
     try {
                 const { data: found, error } = await supabaseClient
             .from('users')
@@ -87,10 +86,11 @@ async function doLogin() {
         document.getElementById('app').style.display = 'block';
         initApp();
         showToast('ยินดีต้อนรับคุณ ' + found.name, 'success');
-
+        hideLoading();
     } catch (err) {
         console.error('Login Error:', err);
         showToast('เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล', 'error');
+        hideLoading();
     }
 }
 function doLogout() {
@@ -1208,6 +1208,7 @@ async function doDeleteFile(id, fileUrl) {
     await supabaseClient.from('files').delete().eq('id', id);
     navigate(currentPage, currentFolder);
 }
+
 // Enter key login
 document.getElementById('login-password').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
@@ -1219,27 +1220,3 @@ document.getElementById('login-username').addEventListener('keydown', e => {
 initData();
 checkSession().catch(console.error);
 
-async function doLogin() {
-    const u = document.getElementById('login-username').value.trim();
-    const p = document.getElementById('login-password').value;
-    if (!u || !p) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
-
-    showLoading('กำลังยืนยันตัวตน...'); // <--- เริ่มโหลด
-
-    try {
-        const hashedPass = CryptoJS.SHA256(p).toString();
-        const { data: found, error } = await supabaseClient
-            .from('users').select('*').eq('username', u).eq('password', hashedPass).single();
-
-        if (error || !found) {
-            document.getElementById('login-error').style.display = 'block';
-            hideLoading(); // <--- ปิดเมื่อผิดพลาด
-            return;
-        }
-        // ... โค้ดเดิมของคุณ ...
-        hideLoading(); // <--- ปิดเมื่อสำเร็จ
-    } catch (err) {
-        hideLoading();
-        showToast('เกิดข้อผิดพลาด', 'error');
-    }
-}
