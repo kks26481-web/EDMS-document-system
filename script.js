@@ -1,7 +1,3 @@
-
-
-
-// แก้ไขส่วนหัวไฟล์
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co'; 
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y'; 
 const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
@@ -364,9 +360,23 @@ function handleAnnFiles(input, annId) {
     });
 }
 
+// ฟังก์ชันดึงไฟล์จาก Cloud (ช่วยให้โค้ดส่วนอื่นสั้นลง)
+async function getCloudFiles(section, folder, subfolder) {
+    let query = supabaseClient.from('files').select('*').eq('section', section);
+    
+    // ถ้ามีการระบุโฟลเดอร์ (ฝ่าย/ปี) ให้กรองเพิ่ม
+    if (folder) query = query.eq('folder', folder);
+    
+    // ถ้ามีการกรองประเภทเอกสาร (WI/FR) ให้กรองเพิ่ม
+    if (subfolder && subfolder !== 'ทั้งหมด') query = query.eq('doc_type', subfolder);
+
+    const { data: files, error } = await query.order('created_at', { ascending: false });
+    return error ? [] : files;
+}
+
 // ==================== DEPT ====================
-function renderDept(folder, subfolder) {
-    const folders = getJSON(FOLDERS_KEY);
+async function renderDept(folder, subfolder) {
+    const files = await getCloudFiles('dept', folder, subfolder);
     const deptFolders = folders.dept || [];
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
@@ -655,97 +665,71 @@ function removePendingFile(i) {
   renderUploadList();
 }
 
-function confirmUpload(section, folder) {
-  if (pendingFiles.length === 0) { showToast('กรุณาเลือกไฟล์', 'error'); return; }
-  const docType = document.getElementById('upload-doc-type')?.value || null;
-  
-  closeModal();
-  showToast(`⏳ กำลังอัพโหลด ${pendingFiles.length} ไฟล์...`);
+// ==================== UPLOAD (SQL + STORAGE VERSION) ====================
+async function confirmUpload(section, folder) {
+    if (pendingFiles.length === 0) { showToast('กรุณาเลือกไฟล์', 'error'); return; }
+    const docType = document.getElementById('upload-doc-type')?.value || null;
+    
+    closeModal();
+    showToast(`⏳ กำลังเริ่มอัปโหลดไปยัง Cloud...`);
 
-  let done = 0;
-  const toProcess = [...pendingFiles];
-  pendingFiles = [];
+    for (const item of pendingFiles) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const fileData = e.target.result;
+            const fileName = `${Date.now()}_${item.name}`; // ป้องกันชื่อไฟล์ซ้ำกันในระบบ
 
-  toProcess.forEach(item => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
-      const data = e.target.result;
-      
-      const saveFile = (finalData) => {
-        const fileObj = {
-          id: uid(), name: item.name, type: item.file.type,
-          size: item.size, data: finalData, uploaded: now(),
-          uploadedBy: currentUser.username, section, folder: folder || null,
-          docType: docType || null, hasWatermark: needsWatermark
+            // ฟังก์ชันสุดท้ายที่จะส่งข้อมูลขึ้น Cloud
+            const saveToCloud = async (finalDataUrl) => {
+                try {
+                    // 1. แปลงไฟล์เป็น Blob เพื่อส่งเข้า Storage
+                    const blob = await (await fetch(finalDataUrl)).blob();
+                    
+                    // 2. อัปโหลดไฟล์เข้า Bucket ที่ชื่อ 'edms-files'
+                    const { error: stError } = await supabaseClient.storage
+                        .from('edms-files')
+                        .upload(fileName, blob);
+                    if (stError) throw stError;
+
+                    // 3. ดึงลิงก์สาธารณะ (URL) มาเก็บไว้
+                    const { data: urlData } = supabaseClient.storage
+                        .from('edms-files')
+                        .getPublicUrl(fileName);
+
+                    // 4. บันทึกข้อมูลไฟล์ลงตาราง 'files' (ตามชื่อคอลัมน์ในรูปของคุณ)
+                    await supabaseClient.from('files').insert([{
+                        name: item.name,
+                        file_url: urlData.publicUrl,
+                        uploader_name: currentUser.name,
+                        section: section,
+                        folder: folder,
+                        doc_type: docType,
+                        size: item.size
+                    }]);
+
+                    showToast(`✅ ${item.name} สำเร็จ`, 'success');
+                    // เมื่อเสร็จแล้วให้โหลดหน้าปัจจุบันใหม่เพื่อโชว์ไฟล์
+                    navigate(currentPage, currentFolder, currentSubfolder);
+
+                } catch (err) {
+                    console.error(err);
+                    showToast(`❌ ${item.name} ล้มเหลว`, 'error');
+                }
+            };
+
+            // ระบบประทับลายน้ำ (ใช้ฟังก์ชันเดิมที่คุณมี)
+            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
+            if (needsWatermark && item.ext === 'pdf') {
+                applyPdfWatermark(fileData, saveToCloud);
+            } else if (needsWatermark && ['png', 'jpg', 'jpeg'].includes(item.ext)) {
+                applyImageWatermark(fileData, saveToCloud);
+            } else {
+                saveToCloud(fileData);
+            }
         };
-        const allFiles = getJSON(FILES_KEY);
-        allFiles.push(fileObj);
-        setJSON(FILES_KEY, allFiles);
-        addLog('upload', currentUser.username, `อัพโหลด: ${item.name} → ${section}/${folder||'-'}`);
-        done++;
-        if (done === toProcess.length) {
-          showToast(`✅ อัพโหลด ${done} ไฟล์สำเร็จ`, 'success');
-          navigate(currentPage, currentFolder, currentSubfolder);
-        }
-      };
-
-      // แก้ไขเพื่อให้รองรับ PDF ด้วย
-      if (needsWatermark && item.ext === 'pdf') {
-      applyPdfWatermark(data, saveFile); // เรียกฟังก์ชันทำลายน้ำ PDF
-      } else if (needsWatermark && ['png', 'jpg', 'jpeg'].includes(item.ext)) {
-       applyImageWatermark(data, saveFile);
-        } else {
-  saveFile(data);
-}
-
- };
-    reader.readAsDataURL(item.file);
-  });
-}
-
-function applyImageWatermark(dataUrl, callback) {
-  const wmData = ls(WM_KEY);
-  const wmText = ls('edms_wm_text') || '';
-  
-  const img = new Image();
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-
-    // Apply image watermark if available
-    if (wmData) {
-      const wm = new Image();
-      wm.onload = () => {
-        ctx.globalAlpha = 0.25;
-        const maxW = canvas.width * 0.8;
-        const scale = maxW / wm.width;
-        const ww = wm.width * scale, wh = wm.height * scale;
-        const posX = (canvas.width / 2) - (ww / 2);
-        const posY = (canvas.height / 2) - (wh / 2);
-        ctx.drawImage(wm, posX, posY, ww, wh);
-        ctx.globalAlpha = 1.0;
-
-    if (wmText && wmText.trim() !== '') {
-            drawTextWatermark(ctx, canvas.width, canvas.height, wmText);
-        }
-        callback(canvas.toDataURL('image/jpeg', 0.92));
-      };
-
-      wm.onerror = () => {
-        drawTextWatermark(ctx, canvas.width, canvas.height, wmText);
-        callback(canvas.toDataURL('image/jpeg', 0.92));
-      };
-      wm.src = wmData;
-    } else {
-      drawTextWatermark(ctx, canvas.width, canvas.height, wmText);
-      callback(canvas.toDataURL('image/jpeg', 0.92));
+        reader.readAsDataURL(item.file);
     }
-  };
-  img.src = dataUrl;
+    pendingFiles = [];
 }
 
 // --- 1. ฟังก์ชันทำลายน้ำ PDF (ปรับปรุงให้เบาเครื่องขึ้น ป้องกันเว็บค้าง) ---
@@ -897,15 +881,30 @@ function downloadFile(id) {
   showToast('ดาวน์โหลดสำเร็จ', 'success');
 }
 
-function deleteFile(id) {
-  if (!confirm('ลบไฟล์นี้?')) return;
-  const files = getJSON(FILES_KEY);
-  const f = files.find(x => x.id === id);
-  const newFiles = files.filter(x => x.id !== id);
-  setJSON(FILES_KEY, newFiles);
-  if (f) addLog('delete', currentUser.username, `ลบไฟล์: ${f.name}`);
-  navigate(currentPage, currentFolder, currentSubfolder);
-  showToast('ลบไฟล์สำเร็จ', 'success');
+async function deleteFile(id) {
+    if (!confirm('ยืนยันการลบไฟล์นี้ถาวรจากระบบ Cloud?')) return;
+    
+    // 1. ดึงข้อมูลไฟล์ก่อนเพื่อเอาชื่อใน Storage มาลบ
+    const { data: f } = await supabaseClient.from('files').select('*').eq('id', id).single();
+    if (!f) return;
+
+    try {
+        // ดึงชื่อไฟล์จาก URL (ตัวสุดท้ายหลังเครื่องหมาย /)
+        const fileNameInStorage = f.file_url.split('/').pop();
+
+        // 2. ลบไฟล์จริงออกจาก Storage
+        await supabaseClient.storage.from('edms-files').remove([fileNameInStorage]);
+
+        // 3. ลบข้อมูลจากตาราง SQL
+        await supabaseClient.from('files').delete().eq('id', id);
+
+        addLog('delete', currentUser.username, `ลบไฟล์: ${f.name}`);
+        showToast('ลบไฟล์เรียบร้อยแล้ว', 'success');
+        navigate(currentPage, currentFolder, currentSubfolder);
+
+    } catch (err) {
+        showToast('ลบไม่สำเร็จ', 'error');
+    }
 }
 
 // ==================== GLOBAL SEARCH ====================
@@ -932,138 +931,134 @@ function globalSearch(q) {
   content.innerHTML = html;
 }
 
-// ==================== USERS ====================
-function renderUsers() {
-  const users = getJSON(USERS_KEY);
-  let html = `<div class="card">
-    <div class="card-header">
-      <div class="card-title">👥 จัดการผู้ใช้งาน (${users.length} บัญชี)</div>
-      <button class="btn btn-sm" onclick="showAddUser()">+ เพิ่มผู้ใช้</button>
-    </div>
-    <div class="file-table-wrap">
-    <table class="file-table">
-      <thead><tr>
-        <th>ชื่อ</th>
-        <th>ชื่อผู้ใช้</th>
-        <th>บทบาท</th>
-        <th>วันที่สร้าง</th>
-        <th>การดำเนินการ</th>
-      </tr></thead>
-      <tbody>`;
-  users.forEach(u => {
-    html += `<tr>
-      <td>${escHtml(u.name)}</td>
-      <td><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;">${escHtml(u.username)}</span></td>
-      <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">${u.role === 'admin' ? 'Admin' : 'User'}</span></td>
-      <td class="text-muted text-sm">${fmtDateShort(u.created)}</td>
-      <td><div class="actions-cell">
-        ${u.id !== currentUser.id ? `
-          <button class="btn btn-outline btn-xs" onclick="editUser('${u.id}')">✏️ แก้ไข</button>
-          <button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑 ลบ</button>
-        ` : '<span class="text-muted text-sm">(บัญชีปัจจุบัน)</span>'}
-      </div></td>
-    </tr>`;
-  });
-  html += `</tbody></table></div></div>`;
-  document.getElementById('page-content').innerHTML = html;
-}
+// ==================== USERS (SQL VERSION) ====================
 
-function showAddUser() {
-  showModal('เพิ่มผู้ใช้งาน',
-    `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="new-u-name" placeholder="ชื่อ-นามสกุล"></div>
-     <div class="form-group"><label>ชื่อผู้ใช้</label><input type="text" id="new-u-user" placeholder="username (ไม่มีช่องว่าง)"></div>
-     <div class="form-group"><label>รหัสผ่าน</label><input type="password" id="new-u-pass" placeholder="อย่างน้อย 4 ตัวอักษร"></div>
-     <div class="form-group"><label>บทบาท</label>
-       <select id="new-u-role"><option value="user">User (ผู้ใช้ทั่วไป)</option><option value="admin">Admin (ผู้ดูแลระบบ)</option></select>
-     </div>`,
-    [
-      { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
-      { text: 'เพิ่ม', fn: () => {
-        const name = document.getElementById('new-u-name').value.trim();
-        const username = document.getElementById('new-u-user').value.trim();
-        const password = document.getElementById('new-u-pass').value;
-        const role = document.getElementById('new-u-role').value;
-        if (!name || !username || !password) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
-        if (password.length < 4) { showToast('รหัสผ่านต้องมีอย่างน้อย 4 ตัวอักษร', 'error'); return; }
-        if (username.includes(' ')) { showToast('ชื่อผู้ใช้ห้ามมีช่องว่าง', 'error'); return; }
-        const users = getJSON(USERS_KEY);
-        if (users.find(u => u.username === username)) { showToast('ชื่อผู้ใช้นี้ถูกใช้แล้ว', 'error'); return; }
-        users.push({ id: uid(), name, username, password, role, created: now() });
-        setJSON(USERS_KEY, users);
-        addLog('create', currentUser.username, `เพิ่มผู้ใช้: ${username} (${role})`);
-        closeModal(); renderUsers();
-        showToast('เพิ่มผู้ใช้สำเร็จ', 'success');
-      }}
-    ]
-  );
-}
+// 1. ฟังก์ชันดึงรายชื่อผู้ใช้จาก Cloud มาแสดงผล
+async function renderUsers() {
+    const { data: users, error } = await supabaseClient
+        .from('users')
+        .select('*')
+        .order('name');
 
-function editUser(id) {
-    const users = getJSON(USERS_KEY);
-    const u = users.find(x => x.id === id);
-        if (!u) return;
-        showModal('แก้ไขผู้ใช้งาน',
-        `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="edit-u-name" value="${escHtml(u.name)}"></div>
-        <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างถ้าไม่ต้องการเปลี่ยน)</label><input type="password" id="edit-u-pass" placeholder="รหัสผ่านใหม่"></div>
-        <div class="form-group"><label>บทบาท</label>
-            <select id="edit-u-role">
-            <option value="user" ${u.role==='user'?'selected':''}>User</option>
-            <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
-            </select></div>`,
-    [
-      { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
-      { text: 'บันทึก', fn: () => {
-        u.name = document.getElementById('edit-u-name').value.trim();
-        const newPass = document.getElementById('edit-u-pass').value;
-        if (newPass) {
-          if (newPass.length < 4) { showToast('รหัสผ่านต้องมีอย่างน้อย 4 ตัว', 'error'); return; }
-          u.password = newPass;
-        }
-        u.role = document.getElementById('edit-u-role').value;
-        setJSON(USERS_KEY, users);
-        addLog('edit', currentUser.username, `แก้ไขผู้ใช้: ${u.username}`);
-        closeModal(); renderUsers();
-        showToast('แก้ไขสำเร็จ', 'success');
-      }}
-    ]
-  );
-}
+    if (error) { 
+        showToast('เกิดข้อผิดพลาดในการโหลดผู้ใช้', 'error'); 
+        return; 
+    }
 
-function deleteUser(id) {
-  if (!confirm('ลบผู้ใช้งานนี้?')) return;
-  const users = getJSON(USERS_KEY);
-  const u = users.find(x => x.id === id);
-  setJSON(USERS_KEY, users.filter(x => x.id !== id));
-  if (u) addLog('delete', currentUser.username, `ลบผู้ใช้: ${u.username}`);
-  renderUsers();
-  showToast('ลบผู้ใช้สำเร็จ', 'success');
-}
+    let html = `<div class="card">
+        <div class="card-header">
+            <div class="card-title">👥 จัดการผู้ใช้งาน (${users.length} บัญชี)</div>
+            <button class="btn btn-sm" onclick="showAddUser()">+ เพิ่มผู้ใช้</button>
+        </div>
+        <div class="file-table-wrap">
+        <table class="file-table">
+            <thead><tr>
+                <th>ชื่อ</th>
+                <th>ชื่อผู้ใช้</th>
+                <th>บทบาท</th>
+                <th>วันที่สร้าง</th>
+                <th>การดำเนินการ</th>
+            </tr></thead>
+            <tbody>`;
 
-// ==================== LOGS ====================
-function renderLogs() {
-  const logs = getJSON(LOGS_KEY);
-  let html = `<div class="card">
-    <div class="card-header">
-      <div class="card-title">📝 บันทึกการใช้งานระบบ</div>
-      <span class="text-muted text-sm">${logs.length} รายการ</span>
-    </div>`;
-  if (logs.length === 0) {
-    html += `<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-text">ยังไม่มีบันทึก</div></div>`;
-  } else {
-    html += `<div style="max-height:600px;overflow-y:auto;">`;
-    logs.slice(0, 200).forEach(l => {
-      const icons = { login:'🔑', logout:'🚪', upload:'📤', download:'⬇', delete:'🗑', create:'✨', edit:'✏️', view:'👁' };
-      html += `<div class="log-entry">
-        <span class="log-time">${fmtDate(l.time)}</span>
-        <span class="log-user">${escHtml(l.user)}</span>
-        <span class="log-action">${icons[l.type]||'•'} ${escHtml(l.action)}</span>
-      </div>`;
+    users.forEach(u => {
+        html += `<tr>
+            <td>${escHtml(u.name)}</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;">${escHtml(u.username)}</span></td>
+            <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">${u.role === 'admin' ? 'Admin' : 'User'}</span></td>
+            <td class="text-muted text-sm">${fmtDateShort(u.created_at)}</td>
+            <td><div class="actions-cell">
+                ${u.id !== currentUser.id ? `
+                    <button class="btn btn-outline btn-xs" onclick="editUser('${u.id}')">✏️ แก้ไข</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑 ลบ</button>
+                ` : '<span class="text-muted text-sm">(บัญชีปัจจุบัน)</span>'}
+            </div></td>
+        </tr>`;
     });
-    html += `</div>`;
-  }
-  html += `</div>`;
-  document.getElementById('page-content').innerHTML = html;
+
+    html += `</tbody></table></div></div>`;
+    document.getElementById('page-content').innerHTML = html;
 }
+
+// 2. ฟังก์ชันแสดง Modal และบันทึกผู้ใช้ใหม่ลง Cloud
+function showAddUser() {
+    showModal('เพิ่มผู้ใช้งาน',
+        `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="new-u-name" placeholder="ชื่อ-นามสกุล"></div>
+         <div class="form-group"><label>ชื่อผู้ใช้</label><input type="text" id="new-u-user" placeholder="username"></div>
+         <div class="form-group"><label>รหัสผ่าน</label><input type="password" id="new-u-pass" placeholder="อย่างน้อย 4 ตัวอักษร"></div>
+         <div class="form-group"><label>บทบาท</label>
+           <select id="new-u-role"><option value="user">User (ทั่วไป)</option><option value="admin">Admin (ผู้ดูแล)</option></select>
+         </div>`,
+        [
+            { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
+            { text: 'เพิ่ม', fn: async () => {
+                const name = document.getElementById('new-u-name').value.trim();
+                const username = document.getElementById('new-u-user').value.trim();
+                const password = document.getElementById('new-u-pass').value;
+                const role = document.getElementById('new-u-role').value;
+
+                if (!name || !username || !password) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
+                const hashedPass = CryptoJS.SHA256(password).toString().toLowerCase();
+
+                const { error } = await supabaseClient
+                    .from('users')
+                    .insert([{ name, username, password: hashedPass, role }]);
+
+                if (error) { showToast('ชื่อผู้ใช้นี้ซ้ำหรือเกิดข้อผิดพลาด', 'error'); return; }
+                
+                addLog('create', currentUser.username, `เพิ่มผู้ใช้: ${username}`);
+                closeModal(); 
+                renderUsers(); // รีโหลดตาราง
+                showToast('เพิ่มผู้ใช้สำเร็จ', 'success');
+            }}
+        ]
+    );
+}
+
+// 3. ฟังก์ชันแก้ไขข้อมูลผู้ใช้บน Cloud
+async function editUser(id) {
+    const { data: u } = await supabaseClient.from('users').select('*').eq('id', id).single();
+    if (!u) return;
+
+    showModal('แก้ไขผู้ใช้งาน',
+        `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="edit-u-name" value="${escHtml(u.name)}"></div>
+         <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างได้)</label><input type="password" id="edit-u-pass"></div>
+         <div class="form-group"><label>บทบาท</label>
+            <select id="edit-u-role">
+                <option value="user" ${u.role==='user'?'selected':''}>User</option>
+                <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+            </select></div>`,
+        [
+            { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
+            { text: 'บันทึก', fn: async () => {
+                const name = document.getElementById('edit-u-name').value.trim();
+                const pass = document.getElementById('edit-u-pass').value;
+                const role = document.getElementById('edit-u-role').value;
+
+                let updateData = { name, role };
+                if (pass) updateData.password = CryptoJS.SHA256(pass).toString().toLowerCase();
+
+                const { error } = await supabaseClient.from('users').update(updateData).eq('id', id);
+                if (error) { showToast('แก้ไขไม่สำเร็จ', 'error'); return; }
+
+                addLog('edit', currentUser.username, `แก้ไขผู้ใช้: ${u.username}`);
+                closeModal(); 
+                renderUsers();
+                showToast('แก้ไขสำเร็จ', 'success');
+            }}
+        ]
+    );
+}
+
+// 4. ฟังก์ชันลบผู้ใช้ออกจาก Cloud
+async function deleteUser(id) {
+    if (!confirm('ลบผู้ใช้นี้ถาวร?')) return;
+    const { error } = await supabaseClient.from('users').delete().eq('id', id);
+    if (error) { showToast('ลบไม่สำเร็จ', 'error'); return; }
+    renderUsers();
+    showToast('ลบสำเร็จ', 'success');
+}
+
 
 // ==================== WATERMARK ====================
 function renderWatermark() {
@@ -1179,6 +1174,41 @@ function getFileIcon(ext) {
   return icons[ext] || '📄';
 }
 
+// อัปโหลดและเพิ่มข้อมูลไฟล์
+async function uploadAndSaveFile(file, metadata) {
+    const fileName = `${Date.now()}_${file.name}`;
+    
+    // 1. อัปโหลดไฟล์เข้า Storage
+    const { data: stData, error: stError } = await supabaseClient.storage
+        .from('edms-files').upload(fileName, file);
+    if (stError) throw stError;
+
+    // 2. ดึง URL และบันทึกลงตาราง files
+    const { data: urlData } = supabaseClient.storage.from('edms-files').getPublicUrl(fileName);
+    
+    const { error: dbError } = await supabaseClient.from('files').insert([{
+        name: file.name,
+        file_url: urlData.publicUrl,
+        uploader_name: currentUser.name,
+        section: metadata.section,
+        folder: metadata.folder,
+        doc_type: metadata.doc_type,
+        size: file.size
+    }]);
+    
+    if (dbError) throw dbError;
+    navigate(currentPage, currentFolder);
+}
+
+// ลบไฟล์
+async function doDeleteFile(id, fileUrl) {
+    const fileName = fileUrl.split('/').pop();
+    // 1. ลบไฟล์จริงใน Storage
+    await supabaseClient.storage.from('edms-files').remove([fileName]);
+    // 2. ลบข้อมูลในตาราง SQL
+    await supabaseClient.from('files').delete().eq('id', id);
+    navigate(currentPage, currentFolder);
+}
 // Enter key login
 document.getElementById('login-password').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
