@@ -694,7 +694,13 @@ async function confirmUpload(section, folder) {
         const reader = new FileReader();
         reader.onload = async (e) => {
             const fileData = e.target.result;
-            const fileName = `${Date.now()}_${item.name}`; // ป้องกันชื่อไฟล์ซ้ำกันในระบบ
+            const safeName = item.name
+                .replace(/[^\w\s\-_.]/g, '')   
+                .replace(/\s+/g, '_')           
+                .replace(/_+/g, '_')           
+                    || 'file';
+            const ext = item.name.split('.').pop();
+            const fileName = `${Date.now()}_${safeName}.${ext}`.replace(/\.\w+\.\w+$/, `.${ext}`);
 
             // ฟังก์ชันสุดท้ายที่จะส่งข้อมูลขึ้น Cloud
             const saveToCloud = async (finalDataUrl) => {
