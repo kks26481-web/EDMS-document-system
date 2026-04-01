@@ -749,7 +749,7 @@ async function renderKnowledge(folder) {
 function showKnowledgeUpload(folder) {
     pendingFiles = [];
     let body = `
-        <div class="watermark-note">📚 ไฟล์ที่อัปโหลดในคลังความรู้จะไม่มีลายน้ำ</div>
+        <div class="watermark-note">📚 ลายน้ำจะถูกประทับลงไฟล์ PDF และ PNG/JPG โดยอัตโนมัติ</div>
         <div class="upload-zone" id="upload-zone"
             onclick="document.getElementById('file-input-knowledge').click()"
             ondragover="event.preventDefault();this.classList.add('drag')"
@@ -787,7 +787,9 @@ async function confirmKnowledgeUpload(folder) {
     showToast('⏳ กำลังอัปโหลด...');
 
     for (const item of pendingFiles) {
-        try {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const fileData = e.target.result;
             const safeName = item.name
                 .replace(/[^\w\s\-_.]/g, '')
                 .replace(/\s+/g, '_')
@@ -795,38 +797,52 @@ async function confirmKnowledgeUpload(folder) {
             const ext = item.name.split('.').pop();
             const fileName = `${Date.now()}_${safeName}.${ext}`.replace(/\.\w+\.\w+$/, `.${ext}`);
 
-            const arrayBuffer = await item.file.arrayBuffer();
-            const blob = new Blob([arrayBuffer], { type: item.file.type });
+            const saveToCloud = async (finalDataUrl) => {
+                try {
+                    const blob = await (await fetch(finalDataUrl)).blob();
 
-            const { error: stError } = await supabaseClient.storage
-                .from('edms-file').upload(fileName, blob, { contentType: item.file.type });
-            if (stError) throw stError;
+                    const { error: stError } = await supabaseClient.storage
+                        .from('edms-file').upload(fileName, blob, { contentType: item.file.type });
+                    if (stError) throw stError;
 
-            const { data: urlData } = supabaseClient.storage
-                .from('edms-file').getPublicUrl(fileName);
+                    const { data: urlData } = supabaseClient.storage
+                        .from('edms-file').getPublicUrl(fileName);
 
-            const { error: dbError } = await supabaseClient.from('files').insert([{
-                name: item.name,
-                file_url: urlData.publicUrl,
-                uploader_name: currentUser.name,
-                section: 'knowledge',
-                folder: folder,
-                doc_type: null,
-                size: item.size
-            }]);
-            if (dbError) throw dbError;
+                    const { error: dbError } = await supabaseClient.from('files').insert([{
+                        name: item.name,
+                        file_url: urlData.publicUrl,
+                        uploader_name: currentUser.name,
+                        section: 'knowledge',
+                        folder: folder,
+                        doc_type: null,
+                        size: item.size
+                    }]);
+                    if (dbError) throw dbError;
 
-            addLog('upload', currentUser.username, `อัปโหลดคลังความรู้: ${item.name}`);
-            showToast(`✅ ${item.name} สำเร็จ`, 'success');
+                    addLog('upload', currentUser.username, `อัปโหลดคลังความรู้: ${item.name}`);
+                    showToast(`✅ ${item.name} สำเร็จ`, 'success');
+                    navigate('knowledge', folder);
 
-        } catch (err) {
-            console.error(err);
-            showToast(`❌ ${item.name} ล้มเหลว: ${err.message}`, 'error');
-        }
+                } catch (err) {
+                    console.error(err);
+                    showToast(`❌ ${item.name} ล้มเหลว: ${err.message}`, 'error');
+                }
+            };
+
+            // ผ่านระบบลายน้ำเหมือนเอกสารปกติ
+            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
+            if (needsWatermark && item.ext === 'pdf') {
+                applyPdfWatermark(fileData, saveToCloud);
+            } else if (needsWatermark && ['png', 'jpg', 'jpeg'].includes(item.ext)) {
+                applyImageWatermark(fileData, saveToCloud);
+            } else {
+                saveToCloud(fileData);
+            }
+        };
+        reader.readAsDataURL(item.file);
     }
 
     pendingFiles = [];
-    navigate('knowledge', folder);
 }
 
 // ==================== UPLOAD ====================
