@@ -679,7 +679,13 @@ function showUploadModal(section, folder) {
     const isDocType = section === 'dept';
     const DOC_TYPES = ['FR', 'WI', 'JD', 'SP', 'SD'];
 
-    let body = `<div class="watermark-note">📄 ลายน้ำจะถูกประทับลงไฟล์ PDF และ PNG/JPG โดยอัตโนมัติ</div>`;
+        let body = `<div class="watermark-note">
+                <i class="fa-solid fa-file-shield"></i>ลายน้ำจะถูกประทับลงไฟล์ PDF และ PNG/JPG โดยอัตโนมัติ
+            </div>
+            <div style="color: #e53e3e; font-size: 13px; margin: 10px 0 10px 10px; font-weight: 500; ">
+                <i class="fa-solid fa-circle-exclamation"></i> หากต้องการลบไฟล์ที่อัพโหลดโปรดแจ้งเจ้าหน้าที่ DCC จ้า
+            </div>`;
+                
     if (isDocType) {
         body += `<div class="form-group"><label>ประเภทเอกสาร</label>
             <select id="upload-doc-type">
