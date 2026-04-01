@@ -130,7 +130,7 @@
 .btn.btn-outline.btn-sm:hover{ color: var(--danger); }
 .btn.btn-outline:hover{ color: var(--danger); }
 .btn.btn-outline.btn-xs:hover { color: var(--accent); }
-
+.btn.btn-danger.btn-outline:hover { color: var(--danger); }
 
   /* ===== LAYOUT ===== */
   #app { display: none; min-height: 100vh; }
@@ -717,12 +717,13 @@
     justify-content: center; 
 }
 .btn.btn-logout:hover {color: var(--danger);}
+
 /* Loading Overlay */
 .loading-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(255, 255, 255, 0.7);
-    display: none; /* ปิดไว้ก่อน */
+    display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
