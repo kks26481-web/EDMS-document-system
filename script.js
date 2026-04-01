@@ -391,15 +391,12 @@ function handleAnnFiles(input, annId) {
     });
 }
 
-// ฟังก์ชันดึงไฟล์จาก Cloud (ช่วยให้โค้ดส่วนอื่นสั้นลง)
+
 async function getCloudFiles(section, folder, subfolder) {
     let query = supabaseClient.from('files').select('*').eq('section', section);
     
-    // ถ้ามีการระบุโฟลเดอร์ (ฝ่าย/ปี) ให้กรองเพิ่ม
-    if (folder) query = query.eq('folder', folder);
-    
-    // ถ้ามีการกรองประเภทเอกสาร (WI/FR) ให้กรองเพิ่ม
-    if (subfolder && subfolder !== 'ทั้งหมด') query = query.eq('doc_type', subfolder);
+     if (folder) query = query.eq('folder', folder);
+     if (subfolder && subfolder !== 'ทั้งหมด') query = query.eq('doc_type', subfolder);
 
     const { data: files, error } = await query.order('created_at', { ascending: false });
     return error ? [] : files;
@@ -706,11 +703,11 @@ async function confirmUpload(section, folder) {
                     const blob = await (await fetch(finalDataUrl)).blob();
                     
                     // 2. อัปโหลดไฟล์เข้า Bucket ที่ชื่อ 'edms-files'
-                    const { error: stError } = await supabaseClient.storage.from('edms-files').upload(fileName, blob);
+                    const { error: stError } = await supabaseClient.storage.from('edms-file').upload(fileName, blob);
                     if (stError) throw stError;
 
                     // 3. ดึงลิงก์สาธารณะ (URL) มาเก็บไว้
-                    const { data: urlData } = supabaseClient.storage.from('edms-files').getPublicUrl(fileName);
+                    const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
 
                     // 4. บันทึกข้อมูลไฟล์ลงตาราง 'files' (ตามชื่อคอลัมน์ในรูปของคุณ)
                     await supabaseClient.from('files').insert([{
@@ -1196,11 +1193,11 @@ async function uploadAndSaveFile(file, metadata) {
     
     // 1. อัปโหลดไฟล์เข้า Storage
     const { data: stData, error: stError } = await supabaseClient.storage
-        .from('edms-files').upload(fileName, file);
+        .from('edms-file').upload(fileName, file);
     if (stError) throw stError;
 
     // 2. ดึง URL และบันทึกลงตาราง files
-    const { data: urlData } = supabaseClient.storage.from('edms-files').getPublicUrl(fileName);
+    const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
     
     const { error: dbError } = await supabaseClient.from('files').insert([{
         name: file.name,
@@ -1225,7 +1222,7 @@ function closePreview() {
 async function doDeleteFile(id, fileUrl) {
     const fileName = fileUrl.split('/').pop();
     // 1. ลบไฟล์จริงใน Storage
-    await supabaseClient.storage.from('edms-files').remove([fileName]);
+    await supabaseClient.storage.from('edms-file').remove([fileName]);
     // 2. ลบข้อมูลในตาราง SQL
     await supabaseClient.from('files').delete().eq('id', id);
     navigate(currentPage, currentFolder);
