@@ -779,67 +779,81 @@ function handleKnowledgeDrop(event, folder) {
 }
 
 async function confirmKnowledgeUpload(folder) {
-    if (pendingFiles.length === 0) return;
+    if (pendingFiles.length === 0) { 
+        showToast('กรุณาเลือกไฟล์', 'error'); 
+        return; 
+    }
 
     closeModal();
-    toggleLoading(true, 'กำลังประมวลผลลายน้ำจาก Cloud...');
+    showToast('⏳ กำลังประมวลผลและอัปโหลด...');
 
-    try {
-        // --- ส่วนสำคัญ: ดึงค่าลายน้ำล่าสุดจาก Database ---
-        const { data: wmConfig } = await supabaseClient
-            .from('watermark_settings')
-            .select('wm_text, wm_img_url')
-            .eq('id', 'current_config')
-            .single();
-
-        for (const item of pendingFiles) {
-            const fileData = await new Promise((resolve) => {
+    for (const item of pendingFiles) {
+        try {
+            // 1. อ่านไฟล์เป็น DataURL
+            const fileData = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = reject;
                 reader.readAsDataURL(item.file);
             });
 
+            // 2. จัดการลายน้ำ (รอจนกว่าจะประมวลผลเสร็จ)
             let finalDataUrl = fileData;
-            const needsWM = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
+            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
 
-            if (needsWM) {
-                // ส่ง wmConfig (text และ img) เข้าไปในฟังก์ชันประทับลายน้ำ
+            if (needsWatermark) {
                 finalDataUrl = await new Promise((resolve) => {
                     if (item.ext === 'pdf') {
-                        // ปรับให้ใช้ค่าจาก wmConfig แทน localStorage
-                        applyPdfWatermarkManual(fileData, (res) => resolve(res), wmConfig);
+                        applyPdfWatermark(fileData, (result) => resolve(result));
                     } else {
-                        applyImageWatermarkManual(fileData, (res) => resolve(res), wmConfig);
+                        applyImageWatermark(fileData, (result) => resolve(result));
                     }
                 });
             }
 
-            // อัปโหลดไฟล์ที่ประทับลายน้ำแล้ว
-            const blob = await (await fetch(finalDataUrl)).blob();
-            const fileName = `${Date.now()}_${item.name.replace(/\s+/g, '_')}`;
-            
-            await supabaseClient.storage.from('edms-file').upload(fileName, blob);
-            const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
+            // 3. แปลง DataURL เป็น Blob เพื่ออัปโหลด
+            const response = await fetch(finalDataUrl);
+            const blob = await response.blob();
 
-            await supabaseClient.from('files').insert([{
+            // 4. ตั้งชื่อไฟล์ให้ปลอดภัย
+            const safeName = item.name.replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_');
+            const fileName = `${Date.now()}_${safeName}`;
+
+            // 5. อัปโหลดเข้า Storage
+            const { error: stError } = await supabaseClient.storage
+                .from('edms-file')
+                .upload(fileName, blob, { contentType: item.file.type });
+            
+            if (stError) throw stError;
+
+            // 6. ดึง URL และบันทึกข้อมูลลง Database
+            const { data: urlData } = supabaseClient.storage
+                .from('edms-file')
+                .getPublicUrl(fileName);
+
+            const { error: dbError } = await supabaseClient.from('files').insert([{
                 name: item.name,
                 file_url: urlData.publicUrl,
                 uploader_name: currentUser.name,
                 section: 'knowledge',
                 folder: folder,
-                size: blob.size
+                doc_type: null,
+                size: blob.size // ใช้ขนาดหลังจากทำลายน้ำแล้ว
             }]);
-        }
 
-        showToast('อัปโหลดคู่มือสำเร็จ', 'success');
-        navigate('knowledge', folder);
-    } catch (err) {
-        showToast('เกิดข้อผิดพลาด', 'error');
-        console.error(err);
-    } finally {
-        toggleLoading(false);
-        pendingFiles = [];
+            if (dbError) throw dbError;
+
+            addLog('upload', currentUser.username, `อัปโหลดคลังความรู้พร้อมลายน้ำ: ${item.name}`);
+            showToast(`✅ ${item.name} สำเร็จ`, 'success');
+
+        } catch (err) {
+            console.error('Upload Process Error:', err);
+            showToast(`❌ ${item.name} ล้มเหลว`, 'error');
+        }
     }
+
+    pendingFiles = [];
+    navigate('knowledge', folder);
 }
 
 
@@ -934,69 +948,105 @@ function removePendingFile(i) {
 async function confirmUpload(section, folder) {
     if (pendingFiles.length === 0) { showToast('กรุณาเลือกไฟล์', 'error'); return; }
     const docType = document.getElementById('upload-doc-type')?.value || null;
-    
     closeModal();
-    showToast(`⏳ กำลังเริ่มอัปโหลดไปยัง Cloud...`);
+    showToast(`⏳ กำลังอัปโหลด...`);
+
+    // ดึง watermark config ครั้งเดียวก่อนวนลูป
+    const wmConfig = await getWatermarkConfig();
 
     for (const item of pendingFiles) {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            const fileData = e.target.result;
-            const safeName = item.name
-                .replace(/[^\w\s\-_.]/g, '')   
-                .replace(/\s+/g, '_')           
-                .replace(/_+/g, '_')           
-                    || 'file';
-            const ext = item.name.split('.').pop();
-            const fileName = `${Date.now()}_${safeName}.${ext}`.replace(/\.\w+\.\w+$/, `.${ext}`);
+        try {
+            const fileData = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(item.file);
+            });
 
-            // ฟังก์ชันสุดท้ายที่จะส่งข้อมูลขึ้น Cloud
-            const saveToCloud = async (finalDataUrl) => {
-                try {
-                    // 1. แปลงไฟล์เป็น Blob เพื่อส่งเข้า Storage
-                    const blob = await (await fetch(finalDataUrl)).blob();
-                    
-                    // 2. อัปโหลดไฟล์เข้า Bucket ที่ชื่อ 'edms-files'
-                    const { error: stError } = await supabaseClient.storage.from('edms-file').upload(fileName, blob);
-                    if (stError) throw stError;
+            const safeName = item.name.replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_') || 'file';
+            const ext = item.ext;
+            const fileName = `${Date.now()}_${safeName}`;
 
-                    // 3. ดึงลิงก์สาธารณะ (URL) มาเก็บไว้
-                    const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
+            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(ext);
+            let finalDataUrl = fileData;
 
-                    // 4. บันทึกข้อมูลไฟล์ลงตาราง 'files' (ตามชื่อคอลัมน์ในรูปของคุณ)
-                    await supabaseClient.from('files').insert([{
-                        name: item.name,
-                        file_url: urlData.publicUrl,
-                        uploader_name: currentUser.name,
-                        section: section,
-                        folder: folder,
-                        doc_type: docType,
-                        size: item.size
-                    }]);
-
-                    showToast(`✅ ${item.name} สำเร็จ`, 'success');
-                    // เมื่อเสร็จแล้วให้โหลดหน้าปัจจุบันใหม่เพื่อโชว์ไฟล์
-                    navigate(currentPage, currentFolder, currentSubfolder);
-
-                } catch (err) {
-                    console.error(err);
-                    showToast(`❌ ${item.name} ล้มเหลว`, 'error');
-                }
-            };
-
-            // ระบบประทับลายน้ำ (ใช้ฟังก์ชันเดิมที่คุณมี)
-            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
-            if (needsWatermark && item.ext === 'pdf') {
-                applyPdfWatermark(fileData, saveToCloud);
-            } else if (needsWatermark && ['png', 'jpg', 'jpeg'].includes(item.ext)) {
-                applyImageWatermark(fileData, saveToCloud);
-            } else {
-                saveToCloud(fileData);
+            if (needsWatermark) {
+                finalDataUrl = await new Promise(resolve => {
+                    if (ext === 'pdf') applyPdfWatermark(fileData, resolve, wmConfig);
+                    else applyImageWatermark(fileData, resolve, wmConfig);
+                });
             }
-        };
-        reader.readAsDataURL(item.file);
+
+            const blob = await (await fetch(finalDataUrl)).blob();
+            const { error: stError } = await supabaseClient.storage.from('edms-file').upload(fileName, blob);
+            if (stError) throw stError;
+
+            const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
+            await supabaseClient.from('files').insert([{
+                name: item.name, file_url: urlData.publicUrl,
+                uploader_name: currentUser.name, section, folder, doc_type: docType, size: blob.size
+            }]);
+
+            addLog('upload', currentUser.username, `อัปโหลด: ${item.name}`);
+            showToast(`✅ ${item.name} สำเร็จ`, 'success');
+        } catch (err) {
+            console.error(err);
+            showToast(`❌ ${item.name} ล้มเหลว`, 'error');
+        }
     }
     pendingFiles = [];
+    navigate(currentPage, currentFolder, currentSubfolder);
+}
+
+async function confirmKnowledgeUpload(folder) {
+    if (pendingFiles.length === 0) { showToast('กรุณาเลือกไฟล์', 'error'); return; }
+    closeModal();
+    showToast('⏳ กำลังประมวลผลและอัปโหลด...');
+
+    const wmConfig = await getWatermarkConfig(); // ดึง config ครั้งเดียว
+
+    for (const item of pendingFiles) {
+        try {
+            const fileData = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(item.file);
+            });
+
+            const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
+            let finalDataUrl = fileData;
+
+            if (needsWatermark) {
+                finalDataUrl = await new Promise(resolve => {
+                    if (item.ext === 'pdf') applyPdfWatermark(fileData, resolve, wmConfig);
+                    else applyImageWatermark(fileData, resolve, wmConfig);
+                });
+            }
+
+            const blob = await (await fetch(finalDataUrl)).blob();
+            const safeName = item.name.replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_') || 'file';
+            const fileName = `${Date.now()}_${safeName}`;
+
+            const { error: stError } = await supabaseClient.storage.from('edms-file').upload(fileName, blob);
+            if (stError) throw stError;
+
+            const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
+            await supabaseClient.from('files').insert([{
+                name: item.name, file_url: urlData.publicUrl,
+                uploader_name: currentUser.name, section: 'knowledge',
+                folder, doc_type: null, size: blob.size
+            }]);
+
+            addLog('upload', currentUser.username, `อัปโหลดคลังความรู้: ${item.name}`);
+            showToast(`✅ ${item.name} สำเร็จ`, 'success');
+        } catch (err) {
+            console.error('Upload Process Error:', err);
+            showToast(`❌ ${item.name} ล้มเหลว`, 'error');
+        }
+    }
+    pendingFiles = [];
+    navigate('knowledge', folder);
 }
 
 function showAddFolder(section) {
@@ -1151,25 +1201,27 @@ async function previewFile(id) {
 }
 
 async function downloadFile(id) {
-  const { data: f } = await supabaseClient.from('files').select('*').eq('id', id).single();
-  if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
-  addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name}`);
-  const a = document.createElement('a');
-  a.href = f.file_url;
-  a.download = f.name;
-  a.target = '_blank';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  showToast('ดาวน์โหลดสำเร็จ', 'success');
-}
-async function deleteAnn(id) {
-    if (!confirm('ลบประกาศนี้?')) return;
-    const { error } = await supabaseClient.from('announcements').delete().eq('id', id);
-    if (error) { showToast('ลบไม่สำเร็จ', 'error'); return; }
-    addLog('delete', currentUser.username, 'ลบประกาศ');
-    renderHome();
-    showToast('ลบประกาศสำเร็จ', 'success');
+    const { data: f } = await supabaseClient.from('files').select('*').eq('id', id).single();
+    if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
+    addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name}`);
+
+    try {
+        showToast('⏳ กำลังดาวน์โหลด...', '');
+        const response = await fetch(f.file_url);
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+        showToast('ดาวน์โหลดสำเร็จ', 'success');
+    } catch (err) {
+        console.error(err);
+        showToast('ดาวน์โหลดล้มเหลว', 'error');
+    }
 }
 
 // ==================== GLOBAL SEARCH ====================
@@ -1322,47 +1374,77 @@ async function deleteUser(id) {
 
 
 // ==================== WATERMARK ====================
-// ดึงข้อมูลลายน้ำจาก Cloud มาแสดงในหน้าตั้งค่า
 async function renderWatermark() {
     const content = document.getElementById('page-content');
     content.innerHTML = '<div class="loading">⏳ กำลังดึงข้อมูลลายน้ำ...</div>';
 
-    // ดึงค่าจาก Cloud
-    const { data: wm, error } = await supabaseClient
-        .from('watermark_settings')
-        .select('*')
-        .eq('id', 'current_config')
-        .single();
+    const { data: wm } = await supabaseClient
+        .from('watermark_settings').select('*').eq('id', 'current_config').single();
 
-    const wmText = wm ? wm.wm_text : '';
-    const wmData = wm ? wm.wm_img_url : '';
+    const wmText = wm?.wm_text || '';
+    const wmData = wm?.wm_img_url || '';
 
-    let html = `
-    <div class="card" style="max-width:500px;">
-        <div class="card-header"><div class="card-title">📄 ตั้งค่าลายน้ำส่วนกลาง (Cloud)</div></div>
-        <p style="font-size:13px; color:var(--text2); margin-bottom:16px;">
-            * Admin ทุกคนจะใช้ลายน้ำชุดนี้ร่วมกัน ไฟล์คู่มือจะถูกประทับลายน้ำนี้โดยอัตโนมัติ
+    content.innerHTML = `
+    <div class="card" style="max-width:520px;">
+        <div class="card-header"><div class="card-title">📄 ตั้งค่าลายน้ำส่วนกลาง</div></div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px;">
+            ลายน้ำจะถูกประทับอัตโนมัติในทุกไฟล์ PDF และรูปภาพที่อัพโหลด (เว้นว่างไว้หากไม่ต้องการลายน้ำ)
         </p>
         <div class="form-group">
-            <label>ข้อความลายน้ำ</label>
+            <label>ข้อความลายน้ำ <span style="font-size:11px;color:var(--text2)">(เว้นว่างได้)</span></label>
             <input type="text" id="wm-text-input" value="${escHtml(wmText)}" placeholder="เช่น ลับเฉพาะ, CONFIDENTIAL">
         </div>
         <div class="form-group">
-            <label>โลโก้ลายน้ำ (Base64)</label>
+            <label>โลโก้ลายน้ำ <span style="font-size:11px;color:var(--text2)">(เว้นว่างได้)</span></label>
             <div class="upload-zone" onclick="document.getElementById('wm-file-input').click()" style="padding:20px;">
-                <div class="upload-zone-text">คลิกเพื่อเปลี่ยนโลโก้</div>
+                <div class="upload-zone-text">คลิกเพื่อเลือกรูปโลโก้</div>
             </div>
-            <input type="file" id="wm-file-input" accept=".png,.jpg,.jpeg" style="display:none" onchange="previewWatermarkImage(this)">
+            <input type="file" id="wm-file-input" accept=".png,.jpg,.jpeg" style="display:none"
+                onchange="previewWatermarkImage(this)">
         </div>
-        <div id="wm-preview-area" style="margin-bottom:16px;">
-            ${wmData ? `<img src="${wmData}" id="wm-img-preview" style="max-height:60px; border:1px solid var(--border); padding:4px;">
-            <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">ลบรูปภาพ</button>` : ''}
+        <div id="wm-preview-area" style="margin-bottom:16px;display:flex;align-items:center;gap:10px;">
+            ${wmData
+                ? `<img src="${wmData}" id="wm-img-preview" style="max-height:60px;border:1px solid var(--border);padding:4px;border-radius:4px;">
+                   <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`
+                : `<span style="font-size:13px;color:var(--text2)">ยังไม่มีโลโก้</span>`}
         </div>
-        <button class="btn" onclick="saveWatermarkToCloud()">💾 บันทึกค่าลายน้ำลง Cloud</button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <button class="btn" onclick="saveWatermarkToCloud()">💾 บันทึก</button>
+            <button class="btn btn-danger btn-outline" onclick="clearAllWatermark()">🗑 ลบลายน้ำทั้งหมด</button>
+        </div>
     </div>`;
-    content.innerHTML = html;
 }
 
+function previewWatermarkImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+        const area = document.getElementById('wm-preview-area');
+        area.innerHTML = `<img src="${e.target.result}" id="wm-img-preview"
+            style="max-height:60px;border:1px solid var(--border);padding:4px;border-radius:4px;">
+            <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`;
+    };
+    reader.readAsDataURL(file);
+}
+
+function clearWatermarkPreview() {
+    document.getElementById('wm-preview-area').innerHTML =
+        `<span style="font-size:13px;color:var(--text2)">ยังไม่มีโลโก้</span>`;
+}
+
+async function clearAllWatermark() {
+    if (!confirm('ลบลายน้ำทั้งหมด (ข้อความและรูปภาพ)?')) return;
+    toggleLoading(true, 'กำลังลบลายน้ำ...');
+    await supabaseClient.from('watermark_settings').upsert({
+        id: 'current_config', wm_text: '', wm_img_url: '',
+        updated_by: currentUser.username, updated_at: new Date()
+    });
+    _wmCache = null;
+    toggleLoading(false);
+    showToast('ลบลายน้ำสำเร็จ', 'success');
+    renderWatermark();
+}
 function applyImageWatermark(dataUrl, callback, wmConfig) {
     const wmText = wmConfig?.wm_text || '';
     const wmData = wmConfig?.wm_img_url || '';
@@ -1411,14 +1493,38 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
     img.onerror = () => callback(dataUrl);
 }
 
-// บันทึกขึ้น Cloud
+// ==================== WATERMARK (CLOUD-FIRST) ====================
+
+// ดึง watermark config จาก Cloud (cache ใน memory สั้นๆ)
+let _wmCache = null;
+let _wmCacheTime = 0;
+
+async function getWatermarkConfig() {
+    const now = Date.now();
+    if (_wmCache !== null && (now - _wmCacheTime) < 30000) return _wmCache; // cache 30 วินาที
+
+    try {
+        const { data: wm } = await supabaseClient
+            .from('watermark_settings')
+            .select('*')
+            .eq('id', 'current_config')
+            .single();
+        _wmCache = wm || { wm_text: '', wm_img_url: '' };
+        _wmCacheTime = now;
+    } catch {
+        _wmCache = { wm_text: '', wm_img_url: '' };
+    }
+    return _wmCache;
+}
+
+// เมื่อบันทึกลายน้ำใหม่ ให้ล้าง cache
 async function saveWatermarkToCloud() {
     const text = document.getElementById('wm-text-input').value;
     const imgElement = document.getElementById('wm-img-preview');
     const imgData = imgElement ? imgElement.src : '';
 
     toggleLoading(true, 'กำลังบันทึกลายน้ำลง Cloud...');
-    
+
     const { error } = await supabaseClient
         .from('watermark_settings')
         .upsert({
@@ -1434,11 +1540,144 @@ async function saveWatermarkToCloud() {
     if (error) {
         showToast('บันทึกล้มเหลว: ' + error.message, 'error');
     } else {
+        _wmCache = null; // ล้าง cache ทันที
         showToast('บันทึกลายน้ำส่วนกลางสำเร็จ', 'success');
         addLog('edit', currentUser.username, 'แก้ไขลายน้ำส่วนกลาง');
         renderWatermark();
     }
 }
+
+// --- ลายน้ำ PDF (เต็มหน้า) ---
+async function applyPdfWatermark(dataUrl, callback, wmConfig) {
+    const wm = wmConfig || await getWatermarkConfig();
+    const wmText = wm?.wm_text || '';
+    const wmData = wm?.wm_img_url || '';
+
+    if (!wmData && !wmText.trim()) { callback(dataUrl); return; }
+
+    try {
+        const base64String = dataUrl.split(',')[1];
+        const binaryString = atob(base64String);
+        const existingPdfBytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) existingPdfBytes[i] = binaryString.charCodeAt(i);
+
+        const pdfDoc = await PDFLib.PDFDocument.load(existingPdfBytes);
+        const pages = pdfDoc.getPages();
+
+        let embeddedImage = null;
+        if (wmData) {
+            try {
+                embeddedImage = wmData.startsWith('data:image/png')
+                    ? await pdfDoc.embedPng(wmData)
+                    : await pdfDoc.embedJpg(wmData);
+            } catch (e) { console.error("Embed Image Error:", e); }
+        }
+
+        for (const page of pages) {
+            const { width, height } = page.getSize();
+
+            // โลโก้เต็มหน้า
+            if (embeddedImage) {
+                page.drawImage(embeddedImage, {
+                    x: 0, y: 0,
+                    width: width, height: height,
+                    opacity: 0.08,
+                });
+            }
+
+            // ข้อความลายน้ำเต็มหน้า (ใช้ Canvas แล้ว embed เป็นรูป)
+            if (wmText.trim()) {
+                const canvas = document.createElement('canvas');
+                canvas.width = width * 2;
+                canvas.height = height * 2;
+                const ctx = canvas.getContext('2d');
+                ctx.scale(2, 2);
+                drawTextWatermarkFull(ctx, width, height, wmText.trim());
+                const textImgData = canvas.toDataURL('image/png');
+                const embeddedText = await pdfDoc.embedPng(textImgData);
+                page.drawImage(embeddedText, { x: 0, y: 0, width: width, height: height });
+            }
+        }
+
+        const pdfBytes = await pdfDoc.saveAsBase64({ dataUri: true });
+        callback(pdfBytes);
+    } catch (err) {
+        console.error("PDF Watermark Error:", err);
+        callback(dataUrl);
+    }
+}
+
+// --- ลายน้ำรูปภาพ (เต็มภาพ) ---
+function applyImageWatermark(dataUrl, callback, wmConfig) {
+    const applyWithConfig = (wm) => {
+        const wmText = wm?.wm_text || '';
+        const wmData = wm?.wm_img_url || '';
+
+        if (!wmData && !wmText.trim()) { callback(dataUrl); return; }
+
+        const img = new Image();
+        img.src = dataUrl;
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            const finish = () => {
+                if (wmText.trim()) drawTextWatermarkFull(ctx, img.width, img.height, wmText.trim());
+                callback(canvas.toDataURL('image/jpeg', 0.9));
+            };
+
+            if (wmData) {
+                const logo = new Image();
+                logo.onload = () => {
+                    // เต็มภาพ
+                    ctx.globalAlpha = 0.08;
+                    ctx.drawImage(logo, 0, 0, img.width, img.height);
+                    ctx.globalAlpha = 1.0;
+                    finish();
+                };
+                logo.onerror = () => finish();
+                logo.src = wmData;
+            } else {
+                finish();
+            }
+        };
+        img.onerror = () => callback(dataUrl);
+    };
+
+    if (wmConfig) {
+        applyWithConfig(wmConfig);
+    } else {
+        getWatermarkConfig().then(applyWithConfig);
+    }
+}
+
+// --- วาดข้อความลายน้ำซ้ำเต็มหน้า (tile pattern) ---
+function drawTextWatermarkFull(ctx, w, h, text) {
+    ctx.save();
+    const fontSize = Math.max(20, Math.floor(Math.min(w, h) * 0.06));
+    ctx.font = `bold ${fontSize}px 'Sarabun', 'Helvetica', sans-serif`;
+    ctx.fillStyle = 'rgba(130, 130, 130, 0.18)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // วนซ้ำแบบ tile เต็มหน้า
+    const stepX = w * 0.4;
+    const stepY = h * 0.25;
+    for (let y = stepY / 2; y < h + stepY; y += stepY) {
+        for (let x = stepX / 2; x < w + stepX; x += stepX) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(-Math.PI / 6);
+            ctx.fillText(text, 0, 0);
+            ctx.restore();
+        }
+    }
+    ctx.restore();
+}
+
 function loadWatermarkImage(input) {
   const file = input.files[0];
   if (!file) return;
