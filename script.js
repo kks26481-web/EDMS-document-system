@@ -1030,7 +1030,7 @@ async function renderWatermark() {
         <div id="wm-preview-area" style="margin-bottom:16px;display:flex;align-items:center;gap:10px;">
             ${wmData
                 ? `<img src="${wmData}" id="wm-img-preview"
-                        style="max-height:60px;border:1px solid var(--border);padding:4px;border-radius:4px;">
+                        style="width:150px; max-height:60px; object-fit:contain; border:1px solid var(--border); padding:4px; border-radius:4px;">
                     <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`
                 : `<span style="font-size:13px;color:var(--text2)">ยังไม่มีโลโก้</span>`}
         </div>
