@@ -1198,8 +1198,7 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
             if (wmData) {
                 const logo = new Image();
                 logo.onload = () => {
-                    ctx.globalAlpha = 0.08;
-                    ctx.drawImage(logo, 0, 0, img.width, img.height);
+                    ctx.save();
                     ctx.globalAlpha = 1.0;
                     finish();
                 };
