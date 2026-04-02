@@ -760,11 +760,17 @@ async function confirmUpload(section, folder) {
     if (pendingFiles.length === 0) { showToast('กรุณาเลือกไฟล์', 'error'); return; }
     const docType = document.getElementById('upload-doc-type')?.value || null;
     closeModal();
-    showToast('⏳ กำลังอัปโหลด...');
 
     const wmConfig = await getWatermarkConfig();
+    const total = pendingFiles.length;
 
-    for (const item of pendingFiles) {
+    for (let idx = 0; idx < pendingFiles.length; idx++) {
+        const item = pendingFiles[idx];
+        const fileLabel = `[${idx + 1}/${total}] ${item.name}`;
+
+        // Toast เริ่มต้น
+        updateProgressToast(fileLabel, 0);
+
         try {
             const fileData = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -773,22 +779,31 @@ async function confirmUpload(section, folder) {
                 reader.readAsDataURL(item.file);
             });
 
+            updateProgressToast(fileLabel, 5); // อ่านไฟล์แล้ว
+
             const safeName = item.name.replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_') || 'file';
             const fileName = `${Date.now()}_${safeName}`;
             const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
             let finalDataUrl = fileData;
 
             if (needsWatermark) {
+                updateProgressToast(fileLabel, 10, 'กำลังประทับลายน้ำ...');
                 finalDataUrl = await new Promise(resolve => {
                     if (item.ext === 'pdf') applyPdfWatermark(fileData, resolve, wmConfig);
                     else applyImageWatermark(fileData, resolve, wmConfig);
                 });
             }
 
+            updateProgressToast(fileLabel, 20, 'กำลังเตรียมไฟล์...');
             const blob = await (await fetch(finalDataUrl)).blob();
-            const { error: stError } = await supabaseClient.storage.from('edms-file').upload(fileName, blob);
-            if (stError) throw stError;
 
+            // อัปโหลดพร้อม progress จริง (20% → 90%)
+            await uploadWithProgress('edms-file', fileName, blob, (pct) => {
+                const mapped = 20 + Math.round(pct * 0.7); // map 0-100 → 20-90
+                updateProgressToast(fileLabel, mapped);
+            });
+
+            updateProgressToast(fileLabel, 95, 'กำลังบันทึกข้อมูล...');
             const { data: urlData } = supabaseClient.storage.from('edms-file').getPublicUrl(fileName);
             await supabaseClient.from('files').insert([{
                 name: item.name, file_url: urlData.publicUrl,
@@ -797,14 +812,91 @@ async function confirmUpload(section, folder) {
             }]);
 
             addLog('upload', currentUser.username, `อัปโหลด: ${item.name}`);
-            showToast(`✅ ${item.name} สำเร็จ`, 'success');
+            updateProgressToast(fileLabel, 100, null, 'success');
+            await new Promise(r => setTimeout(r, 600)); // โชว์ 100% สักครู่
+
         } catch (err) {
             console.error(err);
-            showToast(`❌ ${item.name} ล้มเหลว`, 'error');
+            updateProgressToast(fileLabel, 0, 'อัปโหลดล้มเหลว', 'error');
+            await new Promise(r => setTimeout(r, 1500));
         }
+
+        removeProgressToast();
     }
+
     pendingFiles = [];
     navigate(currentPage, currentFolder, currentSubfolder);
+}
+
+// ==================== UPLOAD WITH PROGRESS ====================
+function uploadWithProgress(bucket, fileName, blob, onProgress) {
+    return new Promise((resolve, reject) => {
+        const supabaseStorageUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(fileName)}`;
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', supabaseStorageUrl);
+        xhr.setRequestHeader('Authorization', `Bearer ${supabaseKey}`);
+        xhr.setRequestHeader('x-upsert', 'false');
+        // ไม่ set Content-Type เอง ให้ browser จัดการ
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                onProgress(pct);
+            }
+        };
+        xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(JSON.parse(xhr.responseText));
+            } else {
+                reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+            }
+        };
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        const formData = new FormData();
+        formData.append('', blob, fileName);
+        xhr.send(formData);
+    });
+}
+
+// ==================== PROGRESS TOAST ====================
+let _progressToastEl = null;
+
+function updateProgressToast(fileName, pct, label, state) {
+    if (!_progressToastEl) {
+        _progressToastEl = document.createElement('div');
+        _progressToastEl.className = 'toast toast-progress';
+        _progressToastEl.style.cssText = `
+            min-width: 280px; max-width: 340px;
+            padding: 12px 16px; pointer-events: none;
+        `;
+        document.getElementById('toast-container').appendChild(_progressToastEl);
+    }
+
+    const icon = state === 'success' ? '✅' : state === 'error' ? '❌' : '📤';
+    const barColor = state === 'success' ? '#48bb78' : state === 'error' ? '#fc8181' : 'var(--color-primary, #4299e1)';
+    const displayLabel = label || (pct < 20 ? 'กำลังเตรียมไฟล์...' : pct < 90 ? 'กำลังอัปโหลด...' : pct < 100 ? 'กำลังบันทึก...' : 'เสร็จสิ้น!');
+
+    _progressToastEl.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px;">
+            <span>${icon}</span>
+            <span style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px;" title="${escHtml(fileName)}">${escHtml(fileName)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--color-text-secondary,#718096);margin-bottom:6px;">${displayLabel}</div>
+        <div style="background:rgba(0,0,0,0.1);border-radius:99px;height:6px;overflow:hidden;">
+            <div style="height:100%;width:${pct}%;background:${barColor};border-radius:99px;transition:width 0.2s ease;"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;font-weight:700;margin-top:4px;color:${barColor};">${pct}%</div>
+    `;
+}
+
+function removeProgressToast() {
+    if (_progressToastEl) {
+        _progressToastEl.style.opacity = '0';
+        _progressToastEl.style.transition = 'opacity 0.3s';
+        setTimeout(() => {
+            _progressToastEl?.remove();
+            _progressToastEl = null;
+        }, 300);
+    }
 }
 
 // ==================== FILE PREVIEW & DOWNLOAD ====================
@@ -1194,9 +1286,6 @@ async function applyPdfWatermark(dataUrl, callback, wmConfig) {
         callback(dataUrl);
     }
 }
-
-
-
 
 function applyImageWatermark(dataUrl, callback, wmConfig) {
     const applyWithConfig = (wm) => {
