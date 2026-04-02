@@ -663,7 +663,7 @@ function showAddFolder(section) {
     );
 }
 
-async function deleteFolder(id, name, section) {
+async function deleteFolder(id, name, ) {
     if (!confirm(`ลบโฟลเดอร์ "${name}" ถาวร?\n(ไฟล์ภายในจะไม่ถูกลบ แต่จะหาไม่เจอ)`)) return;
     const { error } = await supabaseClient.from('folders').delete().eq('id', id);
     if (error) { showToast('ลบไม่สำเร็จ', 'error'); return; }
@@ -948,13 +948,13 @@ async function editUser(id) {
     if (!u) return;
     showModal('แก้ไขผู้ใช้งาน',
         `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="edit-u-name" value="${escHtml(u.name)}"></div>
-         <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างได้)</label><input type="password" id="edit-u-pass"></div>
-         <div class="form-group"><label>บทบาท</label>
-             <select id="edit-u-role">
-                 <option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option>
-                 <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
-             </select>
-         </div>`,
+        <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างได้)</label><input type="password" id="edit-u-pass"></div>
+        <div class="form-group"><label>บทบาท</label>
+            <select id="edit-u-role">
+                <option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option>
+                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+            </select>
+        </div>`,
         [
             { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
             { text: 'บันทึก', fn: async () => {
@@ -1031,7 +1031,7 @@ async function renderWatermark() {
             ${wmData
                 ? `<img src="${wmData}" id="wm-img-preview"
                         style="max-height:60px;border:1px solid var(--border);padding:4px;border-radius:4px;">
-                   <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`
+                    <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`
                 : `<span style="font-size:13px;color:var(--text2)">ยังไม่มีโลโก้</span>`}
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
@@ -1049,7 +1049,7 @@ function previewWatermarkImage(input) {
         document.getElementById('wm-preview-area').innerHTML =
             `<img src="${e.target.result}" id="wm-img-preview"
                 style="max-height:60px;border:1px solid var(--border);padding:4px;border-radius:4px;">
-             <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`;
+            <button class="btn btn-danger btn-xs" onclick="clearWatermarkPreview()">✕ ลบรูปภาพ</button>`;
     };
     reader.readAsDataURL(file);
 }
@@ -1062,13 +1062,22 @@ function clearWatermarkPreview() {
 async function saveWatermarkToCloud() {
     const text = document.getElementById('wm-text-input').value.trim();
     const imgElement = document.getElementById('wm-img-preview');
-    const imgData = (imgElement && imgElement.tagName === 'IMG') ? imgElement.src : '';
+    let imgData = '';
+    if (imgElement && imgElement.tagName === 'IMG') {
+        const src = imgElement.src;
+            if (src.startsWith('data:image/') || src.startsWith('http')) {
+            imgData = src.startsWith('data:image/') ? src : src;
+        }
+    }
 
     toggleLoading(true, 'กำลังบันทึกลายน้ำลง Cloud...');
     const { error } = await supabaseClient.from('watermark_settings').upsert({
-        id: 'current_config', wm_text: text, wm_img_url: imgData,
-        updated_by: currentUser.username, updated_at: new Date()
-    });
+        id: 'current_config',
+        wm_text: text,
+        wm_img_url: imgData,
+        updated_by: currentUser.username,
+        updated_at: new Date().toISOString()
+    }, { onConflict: 'id' });
 
     _wmCache = null;
     _wmCacheTime = 0;
@@ -1076,6 +1085,7 @@ async function saveWatermarkToCloud() {
     toggleLoading(false);
 
     if (error) {
+        console.error('Watermark save error:', error);
         showToast('บันทึกล้มเหลว: ' + error.message, 'error');
     } else {
         showToast('บันทึกลายน้ำสำเร็จ', 'success');
@@ -1087,17 +1097,26 @@ async function saveWatermarkToCloud() {
 async function clearAllWatermark() {
     if (!confirm('ลบลายน้ำทั้งหมด (ข้อความและรูปภาพ)?')) return;
     toggleLoading(true, 'กำลังลบลายน้ำ...');
-    const { error } = await supabaseClient.from('watermark_settings').upsert({
-        id: 'current_config', wm_text: '', wm_img_url: '',
-        updated_by: currentUser.username, updated_at: new Date()
-    });
-
+    
     _wmCache = null;
     _wmCacheTime = 0;
+
+    const { error } = await supabaseClient.from('watermark_settings').upsert({
+        id: 'current_config',
+        wm_text: '',
+        wm_img_url: '',
+        updated_by: currentUser.username,
+        updated_at: new Date().toISOString()
+    }, { onConflict: 'id' });
+
     await getWatermarkConfig();
     toggleLoading(false);
 
-    if (error) { showToast('ลบล้มเหลว: ' + error.message, 'error'); return; }
+    if (error) {
+        console.error('Clear watermark error:', error);
+        showToast('ลบล้มเหลว: ' + error.message, 'error');
+        return;
+    }
     showToast('ลบลายน้ำสำเร็จ', 'success');
     addLog('edit', currentUser.username, 'ลบลายน้ำส่วนกลาง');
     renderWatermark();
@@ -1199,22 +1218,14 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
 
 function drawTextWatermarkFull(ctx, w, h, text) {
     ctx.save();
-    const fontSize = Math.max(20, Math.floor(Math.min(w, h) * 0.06));
+    const fontSize = Math.max(24, Math.floor(Math.min(w, h) * 0.07));
     ctx.font = `bold ${fontSize}px 'Sarabun', 'Helvetica', sans-serif`;
-    ctx.fillStyle = 'rgba(130, 130, 130, 0.18)';
+    ctx.fillStyle = 'rgba(150, 150, 150, 0.25)';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const stepX = w * 0.4;
-    const stepY = h * 0.25;
-    for (let y = stepY / 2; y < h + stepY; y += stepY) {
-        for (let x = stepX / 2; x < w + stepX; x += stepX) {
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.rotate(-Math.PI / 6);
-            ctx.fillText(text, 0, 0);
-            ctx.restore();
-        }
-    }
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(-Math.PI / 6);
+    ctx.fillText(text, 0, 0);
     ctx.restore();
 }
 
