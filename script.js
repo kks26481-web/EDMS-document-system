@@ -1248,18 +1248,18 @@ async function applyPdfWatermark(dataUrl, callback, wmConfig) {
                 
                 if (embeddedImage) {
                     const imgDims = embeddedImage.scale(1);
-                    const scale = Math.min((img.width * 0.75) / logo.width, (img.height * 0.75) / logo.height);
+                    const scale = Math.min((width * 0.75) / imgDims.width, (height * 0.75) / imgDims.height);
                     const w = imgDims.width * scale;
                     const h = imgDims.height * scale;
                         page.drawImage(embeddedImage, {
-                        x: (width / 2) - (w / 2),
-                        y: (height / 2) - (h / 2),
-                        width: w,
-                        height: h,
-                        rotate: PDFLib.degrees(-30),
-                        opacity: 0.08,
-                    });
-                }
+                            x: (width / 2) - (w / 2),
+                            y: (height / 2) - (h / 2),
+                            width: w,
+                            height: h,
+                            rotate: PDFLib.degrees(-30),
+                            opacity: 0.08,
+    });
+}
 
                 if (wmText.trim()) {
                     const canvas = document.createElement('canvas');
@@ -1308,13 +1308,11 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
             if (wmData) {
                 const logo = new Image();
                 logo.onload = () => {
-                        ctx.save();
-                        ctx.globalAlpha = 0.08; // ความโปร่งใสรูปภาพ 8% ตาม PDF
-    // คำนวณขนาดภาพลายน้ำ (ไม่เกิน 50% ของภาพหลัก)
-                        const scale = Math.min((img.width * 0.5) / logo.width, (img.height * 0.5) / logo.height);
-                        const drawW = logo.width * scale;
-                        const drawH = logo.height * scale;
-    // ย้ายไปกึ่งกลาง หมุน แล้ววาด
+                    ctx.save();
+                    ctx.globalAlpha = 0.08; 
+                    const scale = Math.min((img.width * 0.75) / logo.width, (img.height * 0.75) / logo.height);
+                    const drawW = logo.width * scale;
+                    const drawH = logo.height * scale;
                     ctx.translate(img.width / 2, img.height / 2);
                     ctx.rotate(-Math.PI / 6); 
                     ctx.drawImage(logo, -drawW / 2, -drawH / 2, drawW, drawH);
