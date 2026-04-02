@@ -299,17 +299,27 @@ async function renderHome() {
     document.getElementById('page-content').innerHTML = html + `</div>`;
 }
 
+// ==================== ANNOUNCEMENT MANAGEMENT (ADMIN) ====================
 function showAddAnn() {
-    showModal('เพิ่มประกาศ', `<textarea id="ann-text" rows="4" style="width:100%"></textarea>`, [
-        { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
-        { text: 'บันทึก', fn: async () => {
-            const t = document.getElementById('ann-text').value.trim();
-            if (!t) return;
-            await supabaseClient.from('announcements').insert([{ text: t, author: currentUser.username }]);
-            closeModal();
-            renderHome();
-        }}
-    ]);
+    showModal('เพิ่มประกาศ',
+        `<div class="form-group">
+            <label>ข้อความประกาศ</label>
+            <textarea id="ann-text" rows="4" style="width:100%;padding:10px;border:1px solid var(--border2);border-radius:var(--radius);font-family:inherit;font-size:14px;resize:vertical;outline:none;"></textarea>
+        </div>`,
+        [
+            { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
+            { text: 'บันทึก', fn: async () => {
+                const t = document.getElementById('ann-text').value.trim();
+                if (!t) { showToast('กรุณากรอกข้อความ', 'error'); return; }
+                const { error } = await supabaseClient.from('announcements').insert([{ text: t, author: currentUser.username }]);
+                if (error) { showToast('เพิ่มประกาศไม่สำเร็จ: ' + error.message, 'error'); return; }
+                addLog('create', currentUser.username, 'เพิ่มประกาศใหม่');
+                closeModal();
+                renderHome();
+                showToast('เพิ่มประกาศสำเร็จ', 'success');
+            }}
+        ]
+    );
 }
 
 function editAnn(id, currentText) {
