@@ -141,7 +141,7 @@ function resetIdleTimer() {
     document.addEventListener(evt, resetIdleTimer, { passive: true });
 });
 
-const SESSION_EXPIRY_MS = 8 * 60 * 60 * 1000;
+const SESSION_EXPIRY_MS = 1.5 * 60 * 60 * 1000;
 async function checkSession() {
     const raw = ls(SESSION_KEY);
     if (!raw) { document.getElementById('login-screen').style.display = 'flex'; return; }
@@ -1095,11 +1095,33 @@ async function renderUsers() {
     document.getElementById('page-content').innerHTML = html;
 }
 
+// ==================== USER MANAGEMENT via Edge Function ====================
+const EDGE_FN_URL = `${supabaseUrl}/functions/v1/manage-user`;
+
+async function callManageUser(action, payload) {
+    const raw = ls(SESSION_KEY);
+    let requesterId = '';
+    try { requesterId = JSON.parse(raw).id; } catch { requesterId = raw; }
+
+    const res = await fetch(EDGE_FN_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseKey}`
+        },
+        body: JSON.stringify({ action, payload, requesterId })
+    });
+    return await res.json();
+}
+
 function showAddUser() {
     showModal('เพิ่มผู้ใช้งาน',
-        `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="new-u-name" placeholder="ชื่อ-นามสกุล"></div>
-         <div class="form-group"><label>ชื่อผู้ใช้</label><input type="text" id="new-u-user" placeholder="username"></div>
-         <div class="form-group"><label>รหัสผ่าน</label><input type="password" id="new-u-pass" placeholder="อย่างน้อย 4 ตัวอักษร"></div>
+        `<div class="form-group"><label>ชื่อ-นามสกุล</label>
+            <input type="text" id="new-u-name" placeholder="ชื่อ-นามสกุล"></div>
+         <div class="form-group"><label>ชื่อผู้ใช้</label>
+            <input type="text" id="new-u-user" placeholder="username"></div>
+         <div class="form-group"><label>รหัสผ่าน</label>
+            <input type="password" id="new-u-pass" placeholder="อย่างน้อย 4 ตัวอักษร"></div>
          <div class="form-group"><label>บทบาท</label>
              <select id="new-u-role">
                  <option value="user">User (ทั่วไป)</option>
@@ -1113,10 +1135,18 @@ function showAddUser() {
                 const username = document.getElementById('new-u-user').value.trim();
                 const password = document.getElementById('new-u-pass').value;
                 const role = document.getElementById('new-u-role').value;
-                if (!name || !username || !password) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
-                const hashedPass = CryptoJS.SHA256(password).toString().toLowerCase();
-                const { error } = await supabaseClient.from('users').insert([{ name, username, password: hashedPass, role }]);
-                if (error) { showToast('ชื่อผู้ใช้นี้ซ้ำหรือเกิดข้อผิดพลาด', 'error'); return; }
+                if (!name || !username || !password) {
+                    showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return;
+                }
+                if (password.length < 4) {
+                    showToast('รหัสผ่านต้องมีอย่างน้อย 4 ตัวอักษร', 'error'); return;
+                }
+                toggleLoading(true, 'กำลังเพิ่มผู้ใช้...');
+                const result = await callManageUser('create', { name, username, password, role });
+                toggleLoading(false);
+                if (result.error) {
+                    showToast('ผิดพลาด: ' + result.error, 'error'); return;
+                }
                 addLog('create', currentUser.username, `เพิ่มผู้ใช้: ${username}`);
                 closeModal();
                 renderUsers();
@@ -1127,27 +1157,36 @@ function showAddUser() {
 }
 
 async function editUser(id) {
-    const { data: u } = await supabaseClient.from('users').select('*').eq('id', id).single();
+    const { data: u } = await supabaseClient
+        .from('users').select('id, name, username, role').eq('id', id).single();
     if (!u) return;
+
     showModal('แก้ไขผู้ใช้งาน',
-        `<div class="form-group"><label>ชื่อ-นามสกุล</label><input type="text" id="edit-u-name" value="${escHtml(u.name)}"></div>
-        <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างได้)</label><input type="password" id="edit-u-pass"></div>
-        <div class="form-group"><label>บทบาท</label>
-            <select id="edit-u-role">
-                <option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option>
-                <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
-            </select>
-        </div>`,
+        `<div class="form-group"><label>ชื่อ-นามสกุล</label>
+            <input type="text" id="edit-u-name" value="${escHtml(u.name)}"></div>
+         <div class="form-group"><label>รหัสผ่านใหม่ (เว้นว่างได้)</label>
+            <input type="password" id="edit-u-pass"></div>
+         <div class="form-group"><label>บทบาท</label>
+             <select id="edit-u-role">
+                 <option value="user" ${u.role === 'user' ? 'selected' : ''}>User</option>
+                 <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+             </select>
+         </div>`,
         [
             { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
             { text: 'บันทึก', fn: async () => {
                 const name = document.getElementById('edit-u-name').value.trim();
                 const pass = document.getElementById('edit-u-pass').value;
                 const role = document.getElementById('edit-u-role').value;
-                let updateData = { name, role };
-                if (pass) updateData.password = CryptoJS.SHA256(pass).toString().toLowerCase();
-                const { error } = await supabaseClient.from('users').update(updateData).eq('id', id);
-                if (error) { showToast('แก้ไขไม่สำเร็จ', 'error'); return; }
+                if (!name) { showToast('กรุณากรอกชื่อ', 'error'); return; }
+                toggleLoading(true, 'กำลังบันทึก...');
+                const result = await callManageUser('update', {
+                    id, name, role, password: pass || null
+                });
+                toggleLoading(false);
+                if (result.error) {
+                    showToast('ผิดพลาด: ' + result.error, 'error'); return;
+                }
                 addLog('edit', currentUser.username, `แก้ไขผู้ใช้: ${u.username}`);
                 closeModal();
                 renderUsers();
@@ -1157,12 +1196,13 @@ async function editUser(id) {
     );
 }
 
-// ==================== DELETE USER ====================
 async function deleteUser(id) {
     if (!confirm('ลบผู้ใช้นี้ถาวร?')) return;
-    if (!(await verifyAdminFromDB())) { showToast('ไม่มีสิทธิ์ดำเนินการ', 'error'); return; }
-    const { error } = await supabaseClient.from('users').delete().eq('id', id);
-    if (error) { showToast('ลบไม่สำเร็จ', 'error'); return; }
+    toggleLoading(true, 'กำลังลบ...');
+    const result = await callManageUser('delete', { id });
+    toggleLoading(false);
+    if (result.error) { showToast('ผิดพลาด: ' + result.error, 'error'); return; }
+    addLog('delete', currentUser.username, 'ลบผู้ใช้');
     renderUsers();
     showToast('ลบสำเร็จ', 'success');
 }
