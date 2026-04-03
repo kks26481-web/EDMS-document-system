@@ -761,3 +761,32 @@ body {
     font-weight: 500;
     color: var(--primary);
 }
+
+/* Folder Loading Spinner */
+.folder-spinner {
+    width: 44px;
+    height: 44px;
+    border: 4px solid var(--color-border-secondary, #e2e8f0);
+    border-top-color: var(--color-primary, #4299e1);
+    border-radius: 50%;
+    animation: folder-spin 0.8s linear infinite;
+}
+
+@keyframes folder-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Skeleton rows สำหรับ table */
+.skeleton-row {
+    height: 44px;
+    background: linear-gradient(90deg, var(--color-background-secondary) 25%, var(--color-background-tertiary) 50%, var(--color-background-secondary) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.2s infinite;
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}

@@ -521,11 +521,20 @@ async function deleteFile(id) {
     }
 }
 
-async function getCloudFiles(section, folder, subfolder) {
-    let query = supabaseClient.from('files').select('*').eq('section', section);
+const PAGE_SIZE = 30; 
+
+async function getCloudFiles(section, folder, subfolder, page = 0) {
+    let query = supabaseClient
+        .from('files')
+        .select('id, name, file_url, doc_type, uploader_name, created_at, size, section, folder') // ไม่ดึง column ที่ไม่ต้องการ
+        .eq('section', section)
+        .order('created_at', { ascending: false })
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1); // pagination
+
     if (folder) query = query.eq('folder', folder);
     if (subfolder && subfolder !== 'ทั้งหมด') query = query.eq('doc_type', subfolder);
-    const { data: files, error } = await query.order('created_at', { ascending: false });
+
+    const { data: files, error } = await query;
     return error ? [] : files;
 }
 
@@ -533,7 +542,7 @@ async function getCloudFiles(section, folder, subfolder) {
 async function renderDept(folder, subfolder) {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    content.innerHTML = '<div class="loading">⏳ กำลังโหลดไฟล์ ...</div>';
+    content.innerHTML = showFolderLoading('กำลังโหลดเอกสารฝ่าย...')
 
     if (!folder) {
         try {
@@ -588,21 +597,34 @@ async function renderDept(folder, subfolder) {
     }
 }
 
-function renderFileTable(files, isAdmin) {
+function renderFileTable(files, isAdmin, section, folder, subfolder, page = 0) {
     if (!files || files.length === 0) {
         return `<div class="empty-state"><div class="empty-icon">📄</div><div class="empty-text">ยังไม่มีไฟล์</div></div>`;
     }
+
     let html = `<div class="card" style="padding:0;overflow:hidden;">
         <div class="file-table-wrap">
         <table class="file-table">
-            <thead><tr>
-                <th>ประเภทเอกสาร</th><th>ประเภทไฟล์</th><th>ชื่อไฟล์</th>
+            <thead><tr>`;
+
+    // เพิ่ม checkbox column สำหรับ bulk delete (admin)
+    if (isAdmin) {
+        html += `<th style="width:36px;"><input type="checkbox" id="select-all-files" onchange="toggleSelectAll(this)" title="เลือกทั้งหมด"></th>`;
+    }
+
+    html += `<th>ประเภทเอกสาร</th><th>ประเภทไฟล์</th><th>ชื่อไฟล์</th>
                 <th>วันที่อัพโหลด</th><th>อัพโหลดโดย</th><th>การดำเนินการ</th>
-            </tr></thead>
-            <tbody>`;
+            </tr></thead><tbody>`;
+
     files.forEach(f => {
         const ext = f.name.split('.').pop().toLowerCase();
-        html += `<tr>
+        html += `<tr data-file-id="${f.id}">`;
+
+        if (isAdmin) {
+            html += `<td><input type="checkbox" class="file-checkbox" value="${f.id}"></td>`;
+        }
+
+        html += `
             <td>${f.doc_type ? `<span class="doc-type-badge">${f.doc_type}</span>` : '<span class="text-muted">—</span>'}</td>
             <td><span class="file-type-badge ${ext}">${ext.toUpperCase()}</span></td>
             <td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(f.name)}">${escHtml(f.name)}</td>
@@ -611,19 +633,205 @@ function renderFileTable(files, isAdmin) {
             <td><div class="actions-cell">
                 <button class="btn btn-outline btn-xs" onclick="previewFile('${f.id}')">👁 ดู</button>
                 <button class="btn btn-xs" onclick="downloadFile('${f.id}')">ดาวน์โหลด</button>
-                ${isAdmin ? `<button class="btn btn-danger btn-xs" onclick="deleteFile('${f.id}')">🗑</button>` : ''}
+                ${isAdmin ? `
+                    <button class="btn btn-outline btn-xs" onclick="renameFile('${f.id}','${escHtml(f.name).replace(/'/g,"\\'")}')">✏️</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteFile('${f.id}')">🗑</button>
+                ` : ''}
             </div></td>
         </tr>`;
     });
+
     html += `</tbody></table></div></div>`;
-    return html;
+
+    // Toolbar bulk delete + load more
+    let toolbar = '';
+    if (isAdmin) {
+        toolbar = `<div id="bulk-toolbar" style="display:none;align-items:center;gap:10px;margin-bottom:10px;padding:10px;background:var(--color-background-secondary);border-radius:8px;border:1px solid var(--color-border-secondary);">
+            <span id="selected-count" style="font-size:13px;font-weight:600;">เลือก 0 ไฟล์</span>
+            <button class="btn btn-danger btn-sm" onclick="deleteSelectedFiles()">🗑 ลบที่เลือก</button>
+            <button class="btn btn-outline btn-sm" onclick="clearSelection()">✕ ยกเลิก</button>
+        </div>`;
+    }
+
+    // ปุ่ม Load More ถ้าได้ครบ PAGE_SIZE
+    let loadMore = '';
+    if (files.length === PAGE_SIZE) {
+        loadMore = `<div style="text-align:center;margin-top:12px;">
+            <button class="btn btn-outline" onclick="loadMoreFiles('${section}','${folder || ''}','${subfolder || ''}',${page + 1})">
+                โหลดเพิ่มเติม...
+            </button>
+        </div>`;
+    }
+
+    return toolbar + html + loadMore;
+}
+
+// Load More function
+async function loadMoreFiles(section, folder, subfolder, page) {
+    const files = await getCloudFiles(section, folder || null, subfolder || null, page);
+    const isAdmin = currentUser.role === 'admin';
+    const tbody = document.querySelector('.file-table tbody');
+    const loadMoreBtn = document.querySelector('[onclick^="loadMoreFiles"]')?.parentElement;
+
+    if (!tbody) return;
+
+    files.forEach(f => {
+        const ext = f.name.split('.').pop().toLowerCase();
+        const tr = document.createElement('tr');
+        tr.dataset.fileId = f.id;
+        tr.innerHTML = `
+            ${isAdmin ? `<td><input type="checkbox" class="file-checkbox" value="${f.id}" onchange="updateBulkToolbar()"></td>` : ''}
+            <td>${f.doc_type ? `<span class="doc-type-badge">${f.doc_type}</span>` : '<span class="text-muted">—</span>'}</td>
+            <td><span class="file-type-badge ${ext}">${ext.toUpperCase()}</span></td>
+            <td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(f.name)}">${escHtml(f.name)}</td>
+            <td class="text-muted text-sm">${fmtDateShort(f.created_at)}</td>
+            <td class="text-muted text-sm">${escHtml(f.uploader_name || '')}</td>
+            <td><div class="actions-cell">
+                <button class="btn btn-outline btn-xs" onclick="previewFile('${f.id}')">👁 ดู</button>
+                <button class="btn btn-xs" onclick="downloadFile('${f.id}')">ดาวน์โหลด</button>
+                ${isAdmin ? `
+                    <button class="btn btn-outline btn-xs" onclick="renameFile('${f.id}','${escHtml(f.name).replace(/'/g,"\\'")}')">✏️</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteFile('${f.id}')">🗑</button>
+                ` : ''}
+            </div></td>`;
+        tbody.appendChild(tr);
+    });
+
+    // อัปเดตปุ่ม Load More
+    if (loadMoreBtn) {
+        if (files.length === PAGE_SIZE) {
+            loadMoreBtn.innerHTML = `<button class="btn btn-outline" onclick="loadMoreFiles('${section}','${folder}','${subfolder}',${page + 1})">โหลดเพิ่มเติม...</button>`;
+        } else {
+            loadMoreBtn.remove();
+        }
+    }
+}
+
+// ==================== BULK DELETE ====================
+function toggleSelectAll(checkbox) {
+    document.querySelectorAll('.file-checkbox').forEach(cb => {
+        cb.checked = checkbox.checked;
+    });
+    updateBulkToolbar();
+}
+
+function updateBulkToolbar() {
+    const checked = document.querySelectorAll('.file-checkbox:checked');
+    const toolbar = document.getElementById('bulk-toolbar');
+    const countEl = document.getElementById('selected-count');
+    if (!toolbar) return;
+    if (checked.length > 0) {
+        toolbar.style.display = 'flex';
+        countEl.textContent = `เลือก ${checked.length} ไฟล์`;
+    } else {
+        toolbar.style.display = 'none';
+    }
+    // sync select-all checkbox
+    const all = document.querySelectorAll('.file-checkbox');
+    const selectAll = document.getElementById('select-all-files');
+    if (selectAll) {
+        selectAll.indeterminate = checked.length > 0 && checked.length < all.length;
+        selectAll.checked = checked.length === all.length && all.length > 0;
+    }
+}
+
+function clearSelection() {
+    document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = false);
+    const selectAll = document.getElementById('select-all-files');
+    if (selectAll) selectAll.checked = false;
+    updateBulkToolbar();
+}
+
+async function deleteSelectedFiles() {
+    const checked = Array.from(document.querySelectorAll('.file-checkbox:checked'));
+    if (checked.length === 0) return;
+    if (!confirm(`ลบ ${checked.length} ไฟล์ที่เลือกถาวร?`)) return;
+
+    const ids = checked.map(cb => cb.value);
+    toggleLoading(true, `กำลังลบ ${ids.length} ไฟล์...`);
+
+    let done = 0, failed = 0;
+    for (const id of ids) {
+        try {
+            const { data: f } = await supabaseClient.from('files').select('file_url, name').eq('id', id).single();
+            if (f) {
+                const fileNameInStorage = f.file_url.split('/').pop();
+                await supabaseClient.storage.from('edms-file').remove([fileNameInStorage]);
+                await supabaseClient.from('files').delete().eq('id', id);
+                addLog('delete', currentUser.username, `ลบไฟล์: ${f.name}`);
+                done++;
+            }
+        } catch (err) {
+            console.error(err);
+            failed++;
+        }
+    }
+
+    toggleLoading(false);
+    if (done > 0) showToast(`ลบสำเร็จ ${done} ไฟล์`, 'success');
+    if (failed > 0) showToast(`ล้มเหลว ${failed} ไฟล์`, 'error');
+    navigate(currentPage, currentFolder, currentSubfolder);
+}
+
+// ผูก event delegation สำหรับ checkbox (เพิ่มท้ายไฟล์)
+document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('file-checkbox')) updateBulkToolbar();
+});
+
+// ==================== RENAME FILE ====================
+async function renameFile(id, currentName) {
+    const decoded = currentName.replace(/\\'/g, "'").replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');
+    const ext = decoded.split('.').pop().toLowerCase();
+    const nameWithoutExt = decoded.replace(`.${ext}`, '');
+
+    showModal('แก้ไขชื่อไฟล์',
+        `<div class="form-group">
+            <label>ชื่อไฟล์ใหม่</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="text" id="rename-input" value="${escHtml(nameWithoutExt)}"
+                    style="flex:1;" placeholder="ชื่อไฟล์">
+                <span style="font-size:13px;color:var(--color-text-secondary);white-space:nowrap;">.${ext}</span>
+            </div>
+            <div style="font-size:11px;color:var(--color-text-secondary);margin-top:6px;">
+                ⚠️ เปลี่ยนเฉพาะชื่อที่แสดงในระบบ ไม่กระทบไฟล์จริง
+            </div>
+        </div>`,
+        [
+            { text: 'ยกเลิก', cls: 'btn-outline', fn: closeModal },
+            { text: 'บันทึก', fn: async () => {
+                const newName = document.getElementById('rename-input').value.trim();
+                if (!newName) { showToast('กรุณากรอกชื่อไฟล์', 'error'); return; }
+                const fullName = `${newName}.${ext}`;
+                const { error } = await supabaseClient
+                    .from('files').update({ name: fullName }).eq('id', id);
+                if (error) { showToast('แก้ไขชื่อไม่สำเร็จ', 'error'); return; }
+                addLog('edit', currentUser.username, `เปลี่ยนชื่อไฟล์: ${decoded} → ${fullName}`);
+                closeModal();
+                navigate(currentPage, currentFolder, currentSubfolder);
+                showToast('เปลี่ยนชื่อสำเร็จ', 'success');
+            }}
+        ]
+    );
+    // focus และ select text ทันที
+    setTimeout(() => {
+        const input = document.getElementById('rename-input');
+        if (input) { input.focus(); input.select(); }
+    }, 100);
+}
+
+function showFolderLoading(message = 'กำลังโหลดเอกสาร...') {
+    return `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;">
+        <div class="folder-spinner"></div>
+        <div style="font-size:14px;color:var(--color-text-secondary);">${message}</div>
+    </div>`;
 }
 
 // ==================== CENTRAL ====================
 async function renderCentral() {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    content.innerHTML = '<div class="loading">⏳ กำลังโหลด...</div>';
+    content.innerHTML = showFolderLoading('กำลังโหลดเอกสารส่วนกลาง...');
     const files = await getCloudFiles('central', null, null);
     let html = '';
     if (isAdmin) {
