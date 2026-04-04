@@ -167,12 +167,19 @@ async function doLogin() {
 }
 
 // ==================== SET USER HEADER ====================
+
 async function setupSupabaseAuth(user, token) {
-    window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
-        global: { headers: { Authorization: `Bearer ${token}` } },
-        auth: { persistSession: false }
+   
+    if (!window.supabaseClient) {
+        window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
+    }
+
+    window.supabaseClient.auth.setSession({
+        access_token: token,
+        refresh_token: token 
     });
-    const session = { id: user.id, ts: Date.now(), token };
+
+    const session = { id: user.id, ts: Date.now(), token: token };
     ls(SESSION_KEY, JSON.stringify(session));
 }
 
@@ -282,16 +289,16 @@ async function verifyAdminFromDB() {
 
 // ==================== LOG ====================
 async function addLog(type, user, action) {
-    if (!window.supabaseClient) return;
+        if (!window.supabaseClient) return; 
     try {
-        await supabaseClient.from('logs').insert([{ type, user_name: user, action }]);
+        await window.supabaseClient.from('logs').insert([{ type, user_name: user, action }]);
     } catch (e) {
         console.warn('Log insert ล้มเหลว:', e.message);
     }
 }
 
 async function renderLogs() {
-    const { data: logs, error } = await supabaseClient
+    const { data: logs, error } = await window.supabaseClient
         .from('logs').select('*').order('created_at', { ascending: false }).limit(200);
 
     let html = `<div class="card">
