@@ -1228,14 +1228,23 @@ async function confirmUpload(section, folder) {
 }
 
 // ==================== UPLOAD WITH PROGRESS ====================
+function getAuthToken() {
+    try {
+        const raw = ls(SESSION_KEY);
+        const session = JSON.parse(raw);
+        return session.token || supabaseKey;
+    } catch {
+        return supabaseKey;
+    }
+}
+
 function uploadWithProgress(bucket, fileName, blob, onProgress) {
     return new Promise((resolve, reject) => {
         const supabaseStorageUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(fileName)}`;
         const xhr = new XMLHttpRequest();
         xhr.open('POST', supabaseStorageUrl);
-        xhr.setRequestHeader('Authorization', `Bearer ${supabaseKey}`);
+        xhr.setRequestHeader('Authorization', `Bearer ${getAuthToken()}`); 
         xhr.setRequestHeader('x-upsert', 'false');
-        // ไม่ set Content-Type เอง ให้ browser จัดการ
         xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
                 const pct = Math.round((e.loaded / e.total) * 100);
@@ -1255,7 +1264,6 @@ function uploadWithProgress(bucket, fileName, blob, onProgress) {
         xhr.send(formData);
     });
 }
-
 // ==================== PROGRESS TOAST ====================
 let _progressToastEl = null;
 
