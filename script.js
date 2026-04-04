@@ -1,9 +1,51 @@
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
+const JWT_SECRET = 'YOUR_SUPABASE_JWT_SECRET';
 const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
 
 // ==================== CONSTANTS ====================
 const SESSION_KEY = 'edms_session';
+// ==================== JWT AUTH ====================
+async function signJWT(payload) {
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const fullPayload = {
+        ...payload,
+        iss: 'supabase',
+        iat: now,
+        exp: now + (8 * 60 * 60)
+    };
+    const encode = obj =>
+        btoa(unescape(encodeURIComponent(JSON.stringify(obj))))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const headerB64  = encode(header);
+    const payloadB64 = encode(fullPayload);
+    const sigInput   = `${headerB64}.${payloadB64}`;
+    const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(JWT_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false, ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sigInput));
+    const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    return `${sigInput}.${sigB64}`;
+}
+
+async function setupSupabaseAuth(user) {
+    const token = await signJWT({
+        user_id:   user.id,
+        user_role: user.role,
+        username:  user.username
+    });
+    window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+        auth:   { persistSession: false }
+    });
+    const session = { id: user.id, ts: Date.now(), token };
+    ls(SESSION_KEY, JSON.stringify(session));
+}
 
 // ==================== UTILS ====================
 function ls(k, v) {
@@ -98,7 +140,7 @@ async function doLogin() {
 
         loginAttempts[u] = { count: 0, lockUntil: 0 };
         currentUser = found;
-        ls(SESSION_KEY, JSON.stringify({ id: found.id, ts: Date.now() }));
+        await setupSupabaseAuth(found);
         addLog('login', found.username, 'เข้าสู่ระบบสำเร็จ');
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('app').style.display = 'block';
@@ -112,12 +154,30 @@ async function doLogin() {
     }
 }
 
+// ==================== SET USER HEADER ====================
+function setSupabaseUserHeader(userId) {
+        supabaseClient.realtime.headers['x-user-id'] = userId || '';
+        supabaseClient.functions.setAuth(''); 
+        supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
+        global: {
+            headers: { 'x-user-id': userId || '' }
+        }
+    });
+}
+
+// ==================== LOGOUT ====================
 function doLogout() {
     addLog('logout', currentUser.username, 'ออกจากระบบ');
     currentUser = null;
     ls(SESSION_KEY, '');
+
+    // reset supabase client กลับเป็น anon (ไม่มี JWT)
+    window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
+        auth: { persistSession: false }
+    });
+
     document.getElementById('app').style.display = 'none';
-    document.getElementById('login-screen').style.display = 'flex';
+    showLoginScreen();
     document.getElementById('login-password').value = '';
     document.getElementById('login-error').style.display = 'none';
 }
@@ -135,6 +195,30 @@ function resetIdleTimer() {
     }, IDLE_TIMEOUT_MS);
 }
 
+function showLoginScreen() {
+    document.getElementById('login-screen').style.display = 'flex';
+    setTimeout(() => {
+        if (document.getElementById('request-account-link')) return;
+        const GOOGLE_FORM_URL = 'https://forms.gle/YOUR_GOOGLE_FORM_LINK'; // ← เปลี่ยนตรงนี้
+        const loginBox = document.querySelector('.login-box');
+        if (!loginBox) return;
+        const el = document.createElement('div');
+        el.id = 'request-account-link';
+        el.style.cssText = 'text-align:center;margin-top:16px;';
+        el.innerHTML = `
+            <a href="${GOOGLE_FORM_URL}" target="_blank" rel="noopener noreferrer"
+               style="font-size:13px;color:var(--text2);text-decoration:none;
+                      display:inline-flex;align-items:center;gap:6px;padding:8px 16px;
+                      border:1px solid var(--border2);border-radius:var(--radius);transition:color 0.2s;"
+               onmouseover="this.style.color='var(--accent)'"
+               onmouseout="this.style.color='var(--text2)'">
+                <i class="fa-solid fa-circle-question"></i> ขอ Username / Password
+            </a>
+            <div style="font-size:11px;color:var(--text3);margin-top:6px;">สำหรับพนักงานใหม่หรือลืมรหัสผ่าน</div>`;
+        loginBox.appendChild(el);
+    }, 100);
+}
+
 // ผูก event กับทุก user interaction
 ['click', 'keydown', 'mousemove', 'touchstart', 'scroll'].forEach(evt => {
     document.addEventListener(evt, resetIdleTimer, { passive: true });
@@ -143,24 +227,29 @@ function resetIdleTimer() {
 const SESSION_EXPIRY_MS = 1.5 * 60 * 60 * 1000;
 async function checkSession() {
     const raw = ls(SESSION_KEY);
-    if (!raw) { document.getElementById('login-screen').style.display = 'flex'; return; }
+    if (!raw) { showLoginScreen(); return; }
 
     let session;
-    try {
-        session = JSON.parse(raw);
-    } catch {
-        session = { id: raw, ts: Date.now() };
-    }
+    try { session = JSON.parse(raw); }
+    catch { session = { id: raw, ts: Date.now() }; }
 
     if (!session.id || (Date.now() - session.ts) > SESSION_EXPIRY_MS) {
         ls(SESSION_KEY, '');
-        document.getElementById('login-screen').style.display = 'flex';
+        showLoginScreen();
         if (session.id) showToast('Session หมดอายุ กรุณาเข้าสู่ระบบใหม่', 'error');
         return;
     }
 
     toggleLoading(true, 'กำลังโหลด...');
     try {
+        // restore token ก่อน query
+        if (session.token) {
+            window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
+                global: { headers: { Authorization: `Bearer ${session.token}` } },
+                auth: { persistSession: false }
+            });
+        }
+
         const { data: found, error } = await supabaseClient
             .from('users')
             .select('id, username, name, role, created_at')
@@ -169,22 +258,20 @@ async function checkSession() {
 
         if (found && !error) {
             currentUser = found;
-            ls(SESSION_KEY, JSON.stringify({ id: found.id, ts: Date.now() }));
+            await setupSupabaseAuth(found); // refresh token ใหม่
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('app').style.display = 'block';
             initApp();
-            toggleLoading(false);
         } else {
             ls(SESSION_KEY, '');
-            document.getElementById('login-screen').style.display = 'flex';
-            toggleLoading(false);
+            showLoginScreen();
         }
     } catch (err) {
         console.error('Session Error:', err);
         ls(SESSION_KEY, '');
-        toggleLoading(false);
-        document.getElementById('login-screen').style.display = 'flex';
+        showLoginScreen();
     }
+    toggleLoading(false);
 }
 // ==================== ADMIN CHECK ====================
 async function verifyAdminFromDB() {
@@ -521,15 +608,15 @@ async function deleteFile(id) {
     }
 }
 
-const PAGE_SIZE = 30; 
-
 async function getCloudFiles(section, folder, subfolder, page = 0) {
+    const PAGE_SIZE = 25; 
+
     let query = supabaseClient
         .from('files')
-        .select('id, name, file_url, doc_type, uploader_name, created_at, size, section, folder') // ไม่ดึง column ที่ไม่ต้องการ
+        .select('id, name, doc_type, uploader_name, created_at, section, folder')
         .eq('section', section)
         .order('created_at', { ascending: false })
-        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1); // pagination
+        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
     if (folder) query = query.eq('folder', folder);
     if (subfolder && subfolder !== 'ทั้งหมด') query = query.eq('doc_type', subfolder);
@@ -780,20 +867,23 @@ document.addEventListener('change', (e) => {
 
 // ==================== RENAME FILE ====================
 async function renameFile(id, currentName) {
-    const decoded = currentName.replace(/\\'/g, "'").replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');
+    const decoded = currentName
+        .replace(/\\'/g, "'").replace(/&amp;/g,'&')
+        .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');
     const ext = decoded.split('.').pop().toLowerCase();
-    const nameWithoutExt = decoded.replace(`.${ext}`, '');
+    const nameWithoutExt = decoded.slice(0, decoded.lastIndexOf('.'));
 
     showModal('แก้ไขชื่อไฟล์',
         `<div class="form-group">
             <label>ชื่อไฟล์ใหม่</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="text" id="rename-input" value="${escHtml(nameWithoutExt)}"
-                    style="flex:1;" placeholder="ชื่อไฟล์">
-                <span style="font-size:13px;color:var(--color-text-secondary);white-space:nowrap;">.${ext}</span>
-            </div>
-            <div style="font-size:11px;color:var(--color-text-secondary);margin-top:6px;">
-                ⚠️ เปลี่ยนเฉพาะชื่อที่แสดงในระบบ ไม่กระทบไฟล์จริง
+                <input type="text" id="rename-input" 
+                    value="${escHtml(nameWithoutExt)}"
+                    style="flex:1;"
+                    placeholder="ชื่อไฟล์">
+                <span style="font-size:13px;color:var(--text2);white-space:nowrap;
+                    background:var(--bg);padding:9px 12px;border:1px solid var(--border2);
+                    border-radius:var(--radius);">.${ext}</span>
             </div>
         </div>`,
         [
@@ -802,23 +892,44 @@ async function renameFile(id, currentName) {
                 const newName = document.getElementById('rename-input').value.trim();
                 if (!newName) { showToast('กรุณากรอกชื่อไฟล์', 'error'); return; }
                 const fullName = `${newName}.${ext}`;
+
+                // อัปเดตใน DB
                 const { error } = await supabaseClient
-                    .from('files').update({ name: fullName }).eq('id', id);
-                if (error) { showToast('แก้ไขชื่อไม่สำเร็จ', 'error'); return; }
-                addLog('edit', currentUser.username, `เปลี่ยนชื่อไฟล์: ${decoded} → ${fullName}`);
+                    .from('files')
+                    .update({ name: fullName })
+                    .eq('id', id);
+
+                if (error) {
+                    console.error('Rename error:', error);
+                    showToast('แก้ไขชื่อไม่สำเร็จ: ' + error.message, 'error');
+                    return;
+                }
+                addLog('edit', currentUser.username, `เปลี่ยนชื่อ: ${decoded} → ${fullName}`);
                 closeModal();
-                navigate(currentPage, currentFolder, currentSubfolder);
                 showToast('เปลี่ยนชื่อสำเร็จ', 'success');
+
+                // อัปเดตชื่อใน UI โดยไม่ต้อง reload ทั้งหน้า
+                const row = document.querySelector(`tr[data-file-id="${id}"]`);
+                if (row) {
+                    const nameCell = row.cells[3]; // column ชื่อไฟล์
+                    if (nameCell) {
+                        nameCell.textContent = fullName;
+                        nameCell.title = fullName;
+                    }
+                    // อัปเดตปุ่ม rename ให้ใช้ชื่อใหม่
+                    const renameBtn = row.querySelector('[onclick^="renameFile"]');
+                    if (renameBtn) {
+                        renameBtn.setAttribute('onclick', `renameFile('${id}','${escHtml(fullName).replace(/'/g,"\\'")}') `);
+                    }
+                }
             }}
         ]
     );
-    // focus และ select text ทันที
     setTimeout(() => {
         const input = document.getElementById('rename-input');
         if (input) { input.focus(); input.select(); }
     }, 100);
 }
-
 function showFolderLoading(message = 'กำลังโหลดเอกสาร...') {
     return `
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;">
@@ -847,7 +958,7 @@ async function renderCentral() {
 async function renderYearFolder(section, year) {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    content.innerHTML = '<div class="loading">⏳ กำลังโหลด...</div>';
+    content.innerHTML = showFolderLoading('กำลังโหลดเอกสาร...');
 
     if (!year) {
         try {
@@ -895,7 +1006,7 @@ async function renderYearFolder(section, year) {
 async function renderKnowledge(folder) {
     const isAdmin = currentUser.role === 'admin';
     const content = document.getElementById('page-content');
-    content.innerHTML = '<div class="loading">⏳ กำลังโหลด...</div>';
+            content.innerHTML = showFolderLoading('กำลังโหลดเอกสาร...');
 
     if (!folder) {
         try {
