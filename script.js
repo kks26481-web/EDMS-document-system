@@ -2,42 +2,16 @@ const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
 window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
 
+if (!window.supabaseClient) {
+    window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
+        auth: { persistSession: true }
+    });
+}
 // ==================== CONSTANTS ====================
 const SESSION_KEY = 'edms_session';
 const PAGE_SIZE = 25;
-// ==================== JWT AUTH ====================
 
-async function setupSupabaseAuth(user) {
-        const token = await signJWT({
-        user_id: user.id,
-        user_role: user.role,
-        username: user.username
-    });
-    window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
-        global: {
-            headers: { Authorization: `Bearer ${token}` }
-        }
-    });
-    const session = { id: user.id, ts: Date.now(), token: token };
-    ls(SESSION_KEY, JSON.stringify(session));
-    window.supabaseClient = supabaseClient;
-    console.log("Login สำเร็จและเปลี่ยนกุญแจเป็น JWT เรียบร้อย!");
-}
 
-async function loadLogs() {
-    if (!window.supabaseClient) return;
-    const { data, error } = await window.supabaseClient
-        .from('logs')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-    if (error) {
-        console.error("Error fetching logs:", error.message);
-    } else {
-        console.log("Logs data:", data);
-      
-    }
-}
 
 // ==================== UTILS ====================
 function ls(k, v) {
