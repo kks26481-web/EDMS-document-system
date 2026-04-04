@@ -7,7 +7,6 @@ const SESSION_KEY = 'edms_session';
 const PAGE_SIZE = 25;
 // ==================== JWT AUTH ====================
 
-let supabase = supabase.createClient(supabaseUrl, supabaseKey);
 async function setupSupabaseAuth(user) {
     // 1. เรียก Edge Function เพื่อขอ Token (โค้ดเดิมของคุณ)
     const response = await fetch(`${supabaseUrl}/functions/v1/issue-token`, {
