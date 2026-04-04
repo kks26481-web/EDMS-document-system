@@ -5,6 +5,7 @@ const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
 
 // ==================== CONSTANTS ====================
 const SESSION_KEY = 'edms_session';
+const PAGE_SIZE = 25;
 // ==================== JWT AUTH ====================
 async function signJWT(payload) {
     const header = { alg: 'HS256', typ: 'JWT' };
@@ -594,8 +595,7 @@ async function deleteFile(id) {
 }
 
 async function getCloudFiles(section, folder, subfolder, page = 0) {
-    const PAGE_SIZE = 25; 
-
+    
     let query = supabaseClient
         .from('files')
         .select('id, name, doc_type, uploader_name, created_at, section, folder')
@@ -650,6 +650,7 @@ async function renderDept(folder, subfolder) {
             console.error(err);
         }
     } else {
+    try {
         const files = await getCloudFiles('dept', folder, subfolder);
         const DOC_TYPES = ['ทั้งหมด', 'FR', 'WI', 'JD'];
         const activeFilter = subfolder || 'ทั้งหมด';
@@ -665,8 +666,12 @@ async function renderDept(folder, subfolder) {
             ${isAdmin ? `<button class="btn btn-sm" onclick="showUploadModal('dept','${folder}')">+ อัพโหลดไฟล์</button>` : ''}
         </div>`;
         html += renderFileTable(files, isAdmin);
-        content.innerHTML = html;
+        content.innerHTML = html;  // ✅ ต้องถึงบรรทัดนี้เสมอ
+    } catch (err) {
+        console.error('renderDept error:', err);
+        content.innerHTML = `<div class="empty-state">เกิดข้อผิดพลาดในการโหลดไฟล์<br><small>${err.message}</small></div>`;
     }
+}
 }
 
 function renderFileTable(files, isAdmin, section, folder, subfolder, page = 0) {
