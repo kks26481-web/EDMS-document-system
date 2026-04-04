@@ -1,4 +1,3 @@
-let supabase = supabase.createClient(supabaseUrl, supabaseKey);
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
 const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
@@ -8,7 +7,7 @@ const SESSION_KEY = 'edms_session';
 const PAGE_SIZE = 25;
 // ==================== JWT AUTH ====================
 
-
+let supabase = supabase.createClient(supabaseUrl, supabaseKey);
 async function setupSupabaseAuth(user) {
     // 1. เรียก Edge Function เพื่อขอ Token (โค้ดเดิมของคุณ)
     const response = await fetch(`${supabaseUrl}/functions/v1/issue-token`, {
