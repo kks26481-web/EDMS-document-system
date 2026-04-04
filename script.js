@@ -3,7 +3,7 @@ const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
 
 // JWT Secret — ไปดูที่ Supabase Dashboard → Settings → API → JWT Secret
-const JWT_SECRET = 'mTneJhRRYVy+tfven7AdracteCqphXfgz3nfvEGqm4uJnwqnZzQp5h9yvJMqICeWWXxhxUh8BGAC1HCpE64nHQ=='; // ← เปลี่ยนตรงนี้
+const JWT_SECRET = 'mTneJhRRYVy+tfven7AdracteCqphXfgz3nfvEGqm4uJnwqnZzQp5h9yvJMqICeWWXxhxUh8BGAC1HCpE64nHQ=='; 
 
 // สร้าง client เริ่มต้นแบบ anon (ก่อน login)
 window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
@@ -220,24 +220,11 @@ function showLoginScreen() {
     // เพิ่มลิงก์ขอ account
     setTimeout(() => {
         if (document.getElementById('request-account-link')) return;
-        const GOOGLE_FORM_URL = 'https://forms.gle/YOUR_GOOGLE_FORM_LINK'; // ← เปลี่ยนตรงนี้
         const loginBox = document.querySelector('.login-box');
         if (!loginBox) return;
         const el = document.createElement('div');
-        el.id = 'request-account-link';
-        el.style.cssText = 'text-align:center;margin-top:16px;';
-        el.innerHTML = `
-            <a href="${GOOGLE_FORM_URL}" target="_blank" rel="noopener noreferrer"
-               style="font-size:13px;color:var(--text2);text-decoration:none;
-                      display:inline-flex;align-items:center;gap:6px;padding:8px 16px;
-                      border:1px solid var(--border2);border-radius:var(--radius);transition:color 0.2s;"
-               onmouseover="this.style.color='var(--accent)'"
-               onmouseout="this.style.color='var(--text2)'">
-                <i class="fa-solid fa-circle-question"></i> ขอ Username / Password
-            </a>
-            <div style="font-size:11px;color:var(--text3);margin-top:6px;">สำหรับพนักงานใหม่หรือลืมรหัสผ่าน</div>`;
-        loginBox.appendChild(el);
-    }, 100);
+       
+       }, 100);
 }
 
 async function checkSession() {
