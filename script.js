@@ -17,8 +17,8 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 // ==================== UTILS ====================
 function ls(k, v) {
-    if (v === undefined) return localStorage.getItem(k);
-    localStorage.setItem(k, v);
+    if (v === undefined) return sessionStorage.getItem(k);
+    sessionStorage.setItem(k, v);
 }
 
 function fmtDate(d) {
