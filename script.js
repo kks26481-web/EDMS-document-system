@@ -2,7 +2,8 @@
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
 
-
+// JWT Secret — ไปดูที่ Supabase Dashboard → Settings → API → JWT Secret
+const JWT_SECRET = 'mTneJhRRYVy+tfven7AdracteCqphXfgz3nfvEGqm4uJnwqnZzQp5h9yvJMqICeWWXxhxUh8BGAC1HCpE64nHQ=='; 
 
 // สร้าง client เริ่มต้นแบบ anon (ก่อน login)
 window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
@@ -17,8 +18,8 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 // ==================== UTILS ====================
 function ls(k, v) {
-    if (v === undefined) return sessionStorage.getItem(k);
-    sessionStorage.setItem(k, v);
+    if (v === undefined) return localStorage.getItem(k);
+    localStorage.setItem(k, v);
 }
 
 function fmtDate(d) {
@@ -69,11 +70,58 @@ function showFolderLoading(message = 'กำลังโหลดเอกสา
     </div>`;
 }
 
-function setupSupabaseClient(token) {
+// ==================== JWT ====================
+async function signJWT(payload) {
+    const header = { alg: 'HS256', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const fullPayload = {
+        ...payload,
+        iss: 'supabase',
+        role: 'anon',
+        iat: now,
+        exp: now + (8 * 60 * 60)
+    };
+
+    const encode = obj =>
+        btoa(unescape(encodeURIComponent(JSON.stringify(obj))))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+    const headerB64  = encode(header);
+    const payloadB64 = encode(fullPayload);
+    const sigInput   = `${headerB64}.${payloadB64}`;
+
+    const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(JWT_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false, ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sigInput));
+    const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+    return `${sigInput}.${sigB64}`;
+}
+
+// สร้าง supabase client พร้อม JWT token
+async function setupSupabaseAuth(user) {
+    const token = await signJWT({
+        user_id:   user.id,
+        user_role: user.role,
+        username:  user.username
+    });
+
+    // สร้าง client ใหม่พร้อม token ทุกครั้ง
     window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
         global: { headers: { Authorization: `Bearer ${token}` } },
-        auth: { persistSession: false }
+        auth:   { persistSession: false }
     });
+
+    // บันทึก session
+    const session = { id: user.id, ts: Date.now(), token };
+    ls(SESSION_KEY, JSON.stringify(session));
+
+    return token;
 }
 
 function getAuthToken() {
@@ -95,6 +143,7 @@ async function doLogin() {
     const p = document.getElementById('login-password').value;
     if (!u || !p) { showToast('กรุณากรอกข้อมูลให้ครบ', 'error'); return; }
 
+    // Rate limiting
     const now = Date.now();
     if (!loginAttempts[u]) loginAttempts[u] = { count: 0, lockUntil: 0 };
     const att = loginAttempts[u];
@@ -105,20 +154,18 @@ async function doLogin() {
     }
 
     toggleLoading(true, 'กำลังเข้าสู่ระบบ...');
+    const hashedPass = CryptoJS.SHA256(p).toString().toLowerCase();
 
     try {
-        const res = await fetch(`${supabaseUrl}/functions/v1/issue-token`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${supabaseKey}`
-            },
-            body: JSON.stringify({ username: u, password: p }) // ← ส่ง p ตรงๆ ไม่ต้อง hash
+        // ใช้ RPC ตรวจสอบ login — ไม่เปิดเผย username ใน URL
+        const { data, error } = await window.supabaseClient.rpc('verify_login', {
+            p_username: u,
+            p_password: hashedPass
         });
 
-        const result = await res.json();
+        const found = data && data.length > 0 ? data[0] : null;
 
-        if (!res.ok || result.error) {
+        if (error || !found) {
             toggleLoading(false);
             att.count++;
             if (att.count >= 5) {
@@ -133,18 +180,16 @@ async function doLogin() {
             return;
         }
 
+        // Login สำเร็จ — สร้าง JWT และ setup client
         loginAttempts[u] = { count: 0, lockUntil: 0 };
-        currentUser = result.user;
-        setupSupabaseClient(result.token);
+        currentUser = found;
+        await setupSupabaseAuth(found);
 
-        const session = { id: result.user.id, ts: Date.now(), token: result.token };
-        ls(SESSION_KEY, JSON.stringify(session));
-
-        addLog('login', result.user.username, 'เข้าสู่ระบบสำเร็จ');
+        addLog('login', found.username, 'เข้าสู่ระบบสำเร็จ');
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('app').style.display = 'block';
         initApp();
-        showToast('ยินดีต้อนรับคุณ ' + result.user.name, 'success');
+        showToast('ยินดีต้อนรับคุณ ' + found.name, 'success');
         toggleLoading(false);
 
     } catch (err) {
@@ -159,7 +204,7 @@ function doLogout() {
     currentUser = null;
     ls(SESSION_KEY, '');
 
-    // reset กลับเป็น anon client (ไม่มี JWT)
+    // reset กลับเป็น anon client
     window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
         auth: { persistSession: false }
     });
@@ -214,7 +259,7 @@ async function checkSession() {
 
         if (found && !error) {
             currentUser = found;
-            setupSupabaseClient(session.token);
+            await setupSupabaseAuth(found); // refresh token ใหม่
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('app').style.display = 'block';
             initApp();
@@ -1361,18 +1406,13 @@ const EDGE_FN_URL = `${supabaseUrl}/functions/v1/manage-user`;
 async function callManageUser(action, payload) {
     const raw = ls(SESSION_KEY);
     let requesterId = '';
-    let token = supabaseKey; // fallback
-    try {
-        const session = JSON.parse(raw);
-        requesterId = session.id;
-        token = session.token || supabaseKey; // ใช้ JWT token
-    } catch { requesterId = raw; }
+    try { requesterId = JSON.parse(raw).id; } catch { requesterId = raw; }
 
     const res = await fetch(EDGE_FN_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}` // ← ใช้ token จริง
+            'Authorization': `Bearer ${getAuthToken()}`
         },
         body: JSON.stringify({ action, payload, requesterId })
     });
@@ -1460,26 +1500,6 @@ async function deleteUser(id) {
     addLog('delete', currentUser.username, 'ลบผู้ใช้');
     renderUsers();
     showToast('ลบสำเร็จ', 'success');
-}
-
-function isSessionValid() {
-    try {
-        const session = JSON.parse(ls(SESSION_KEY));
-        if (!session?.token || !session?.ts) return false;
-        if ((Date.now() - session.ts) > SESSION_EXPIRY_MS) {
-            showToast('Session หมดอายุ กรุณา Login ใหม่', 'error');
-            setTimeout(doLogout, 1500);
-            return false;
-        }
-        return true;
-    } catch { return false; }
-}
-
-// เพิ่มใน deleteFile, deleteSelectedFiles, renameFile, confirmUpload
-async function deleteFile(id) {
-    if (!isSessionValid()) return; // ← เพิ่มบรรทัดนี้
-    if (!confirm('ยืนยันการลบไฟล์นี้ถาวร?')) return;
-    // ... โค้ดเดิม
 }
 
 // ==================== WATERMARK SETTINGS ====================
