@@ -598,7 +598,7 @@ async function renderHome() {
 
     html += `<div class="card" style="padding:0;overflow:hidden;">
         <div class="card-header" style="padding:12px 16px;">
-            <div class="card-title">🏆 ฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด</div>
+            <div class="card-title">🏆 เอกสารฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด</div>
             <span style="font-size:11px;color:var(--text2);">30 วันล่าสุด</span>
         </div>
         <div style="padding:4px 16px 8px;">`;
@@ -847,6 +847,7 @@ async function renderDept(folder, subfolder) {
         }
     }
 }
+
 
 // ==================== FILE TABLE ====================
 function renderFileTable(files, isAdmin, section, folder, subfolder, page = 0) {
@@ -1239,6 +1240,7 @@ function showUploadModal(section, folder) {
         { text: 'อัพโหลด', fn: () => confirmUpload(section, folder) }
     ]);
 }
+
 
 function handleDrop(event, section, folder) {
     event.preventDefault();
