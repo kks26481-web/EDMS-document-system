@@ -2,7 +2,6 @@
 const supabaseUrl = 'https://hmslzkhetlqcxnqbtfit.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhtc2x6a2hldGxxY3hucWJ0Zml0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTM3MDAsImV4cCI6MjA5MDQyOTcwMH0.53DYgg2MwqDRYf_VPdL4VQ5EOm1BEVmDz2DLLQxdA0Y';
 
-// สร้าง client เริ่มต้นแบบ anon (ก่อน login)
 window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
     auth: { persistSession: false }
 });
@@ -10,8 +9,12 @@ window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
 // ==================== CONSTANTS ====================
 const SESSION_KEY = 'edms_session';
 const PAGE_SIZE = 25;
-const SESSION_EXPIRY_MS = 1.5 * 60 * 60 * 1000; 
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; 
+const SESSION_EXPIRY_MS = 1.5 * 60 * 60 * 1000;
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Supabase Free Tier Quotas
+const SUPABASE_STORAGE_MAX_GB = 1;
+const SUPABASE_BANDWIDTH_MAX_GB = 5;
 
 // ==================== UTILS ====================
 function ls(k, v) {
@@ -74,7 +77,6 @@ function setupSupabaseClient(token) {
     });
 }
 
-
 function getAuthToken() {
     try {
         const raw = ls(SESSION_KEY);
@@ -106,7 +108,6 @@ async function doLogin() {
     toggleLoading(true, 'กำลังเข้าสู่ระบบ...');
 
     try {
-        // เรียก Edge Function — JWT sign อยู่ฝั่ง Server
         const res = await fetch(`${supabaseUrl}/functions/v1/issue-token`, {
             method: 'POST',
             headers: {
@@ -159,7 +160,6 @@ function doLogout() {
     currentUser = null;
     ls(SESSION_KEY, '');
 
-    // reset กลับเป็น anon client
     window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
         auth: { persistSession: false }
     });
@@ -172,14 +172,12 @@ function doLogout() {
 
 function showLoginScreen() {
     document.getElementById('login-screen').style.display = 'flex';
-    // เพิ่มลิงก์ขอ account
     setTimeout(() => {
         if (document.getElementById('request-account-link')) return;
         const loginBox = document.querySelector('.login-box');
         if (!loginBox) return;
         const el = document.createElement('div');
-       
-       }, 100);
+    }, 100);
 }
 
 async function checkSession() {
@@ -190,7 +188,6 @@ async function checkSession() {
     try { session = JSON.parse(raw); }
     catch { ls(SESSION_KEY, ''); showLoginScreen(); return; }
 
-    // ตรวจ session หมดอายุ
     if (!session.id || !session.token || (Date.now() - session.ts) > SESSION_EXPIRY_MS) {
         ls(SESSION_KEY, '');
         showLoginScreen();
@@ -200,7 +197,6 @@ async function checkSession() {
 
     toggleLoading(true, 'กำลังโหลด...');
     try {
-        // restore client ด้วย token เดิมก่อน
         window.supabaseClient = supabase.createClient(supabaseUrl, supabaseKey, {
             global: { headers: { Authorization: `Bearer ${session.token}` } },
             auth: { persistSession: false }
@@ -259,7 +255,6 @@ function resetIdleTimer() {
 });
 
 // ==================== LOG ====================
-// addLogAnon ใช้ก่อน login (ใช้ anon client)
 async function addLogAnon(type, user, action) {
     try {
         const anonClient = supabase.createClient(supabaseUrl, supabaseKey, {
@@ -276,13 +271,66 @@ async function addLog(type, user, action) {
     } catch (e) { console.warn('Log insert ล้มเหลว:', e.message); }
 }
 
+// ==================== RENDER LOGS (+ Storage Stats) ====================
 async function renderLogs() {
     const content = document.getElementById('page-content');
     content.innerHTML = showFolderLoading('กำลังโหลดบันทึก...');
+
     const { data: logs, error } = await window.supabaseClient
         .from('logs').select('*').order('created_at', { ascending: false }).limit(200);
 
-    let html = `<div class="card">
+    // นับ upload/download จาก logs
+    const allLogs = logs || [];
+    const uploadCount = allLogs.filter(l => l.type === 'upload').length;
+    const downloadCount = allLogs.filter(l => l.type === 'download').length;
+
+    // คำนวณ storage จาก files table
+    const { data: filesData } = await window.supabaseClient
+        .from('files').select('size');
+    const totalBytes = (filesData || []).reduce((s, f) => s + (f.size || 0), 0);
+    const totalGB = totalBytes / (1024 * 1024 * 1024);
+    const storePct = Math.min(100, Math.round((totalGB / SUPABASE_STORAGE_MAX_GB) * 100));
+
+    const storageBarColor = storePct > 80 ? '#e53e3e' : storePct > 60 ? '#d97706' : '#16a34a';
+
+    let html = `
+    <div class="card" style="margin-bottom:16px;">
+        <div class="card-header"><div class="card-title">📊 สถิติการใช้งานระบบ</div></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+            <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center;">
+                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">อัพโหลดทั้งหมด</div>
+                <div style="font-size:24px;font-weight:600;">📤 ${uploadCount}</div>
+                <div style="font-size:11px;color:var(--text2);">ครั้ง (200 รายการล่าสุด)</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center;">
+                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">ดาวน์โหลดทั้งหมด</div>
+                <div style="font-size:24px;font-weight:600;">⬇️ ${downloadCount}</div>
+                <div style="font-size:11px;color:var(--text2);">ครั้ง (200 รายการล่าสุด)</div>
+            </div>
+            <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center;">
+                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">ไฟล์ทั้งหมด</div>
+                <div style="font-size:24px;font-weight:600;">🗂 ${(filesData || []).length}</div>
+                <div style="font-size:11px;color:var(--text2);">ไฟล์</div>
+            </div>
+        </div>
+
+        <div style="margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:13px;font-weight:500;">พื้นที่จัดเก็บไฟล์ (Storage)</span>
+                <span style="font-size:12px;color:var(--text2);">${fmtSize(totalBytes)} / ${SUPABASE_STORAGE_MAX_GB} GB</span>
+            </div>
+            <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden;">
+                <div style="height:100%;width:${storePct}%;background:${storageBarColor};border-radius:99px;transition:width 0.4s;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px;">
+                <span style="font-size:11px;color:var(--text2);">ใช้ไปแล้ว ${storePct}%</span>
+                <span style="font-size:11px;color:var(--text2);">Supabase Free Tier: ${SUPABASE_STORAGE_MAX_GB} GB</span>
+            </div>
+            ${storePct > 80 ? `<div style="margin-top:6px;padding:6px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#dc2626;">⚠️ พื้นที่ใกล้เต็ม ควร Upgrade หรือลบไฟล์ที่ไม่ใช้</div>` : ''}
+        </div>
+    </div>
+
+    <div class="card">
         <div class="card-header"><div class="card-title">📝 บันทึกการใช้งานระบบ</div></div>`;
 
     if (error || !logs || !logs.length) {
@@ -290,7 +338,7 @@ async function renderLogs() {
     } else {
         html += `<div style="max-height:600px;overflow-y:auto;">`;
         logs.forEach(l => {
-            const icons = { login: '🔑', upload: '📤', download: '⬇', delete: '🗑' };
+            const icons = { login: '🔑', upload: '📤', download: '⬇️', delete: '🗑', view: '👁', edit: '✏️', create: '➕', logout: '🚪' };
             html += `<div class="log-entry">
                 <span class="log-time">${fmtDate(l.created_at)}</span>
                 <span class="log-user">${escHtml(l.user_name)}</span>
@@ -299,7 +347,8 @@ async function renderLogs() {
         });
         html += `</div>`;
     }
-    document.getElementById('page-content').innerHTML = html + `</div>`;
+
+    content.innerHTML = html + `</div>`;
 }
 
 // ==================== APP INIT ====================
@@ -392,21 +441,66 @@ function closeSidebar() {
     document.getElementById('sidebar-overlay').classList.remove('show');
 }
 
-// ==================== HOME / ANNOUNCEMENTS ====================
+// ==================== DASHBOARD HELPERS ====================
+let _dashKnowledgeAll = [];
+let _dashDeptAll = [];
+
+function renderDashboardFileItem(f, section) {
+    const ext = (f.name || '').split('.').pop().toLowerCase();
+    const icon = getFileIcon(ext);
+    const target = section === 'knowledge' ? `navigate('knowledge','${escHtml(f.folder)}')` : `navigate('dept','${escHtml(f.folder)}')`;
+    return `<div class="dash-item" onclick="${target}" style="display:flex;align-items:flex-start;gap:10px;padding:10px 16px;cursor:pointer;border-bottom:0.5px solid var(--border);">
+        <span style="font-size:18px;flex-shrink:0;">${icon}</span>
+        <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(f.name)}</div>
+            <div style="font-size:11px;color:var(--text2);">ฝ่าย ${escHtml(f.folder)} · ${fmtDateShort(f.created_at)}</div>
+        </div>
+    </div>`;
+}
+
+function showDashMore(section) {
+    const list = section === 'knowledge' ? _dashKnowledgeAll : _dashDeptAll;
+    const containerId = section === 'knowledge' ? 'dash-knowledge-list' : 'dash-dept-list';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = list.map(f => renderDashboardFileItem(f, section)).join('');
+    const btn = document.getElementById(`dash-${section}-more`);
+    if (btn) btn.style.display = 'none';
+}
+
+// ==================== HOME / ANNOUNCEMENTS + DASHBOARD ====================
 async function renderHome() {
     const isAdmin = currentUser.role === 'admin';
-    const { data: anns, error } = await window.supabaseClient
-        .from('announcements').select('*').order('created_at', { ascending: false });
-    const { data: annFiles } = await window.supabaseClient
-        .from('files').select('*').eq('section', 'announcement').order('created_at', { ascending: false });
+    const content = document.getElementById('page-content');
+    content.innerHTML = showFolderLoading('กำลังโหลดหน้าแรก...');
 
-    let html = `<div class="card">
+    // ดึงข้อมูลทั้งหมดพร้อมกัน
+    const [
+        { data: anns, error: annErr },
+        { data: annFiles },
+        { data: knowledgeFiles },
+        { data: deptFiles },
+        { data: logData }
+    ] = await Promise.all([
+        window.supabaseClient.from('announcements').select('*').order('created_at', { ascending: false }),
+        window.supabaseClient.from('files').select('*').eq('section', 'announcement').order('created_at', { ascending: false }),
+        window.supabaseClient.from('files').select('id, name, folder, created_at').eq('section', 'knowledge').order('created_at', { ascending: false }).limit(10),
+        window.supabaseClient.from('files').select('id, name, folder, doc_type, created_at').eq('section', 'dept').order('created_at', { ascending: false }).limit(10),
+        window.supabaseClient.from('logs').select('action, type').or('type.eq.download,type.eq.view').gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+    ]);
+
+    // เก็บไว้ใช้ตอน load more
+    _dashKnowledgeAll = knowledgeFiles || [];
+    _dashDeptAll = deptFiles || [];
+
+    // ===================== ส่วนประกาศ =====================
+    let html = `<div class="card" style="margin-bottom:16px;">
         <div class="card-header">
             <div class="card-title">📢 ประกาศและข่าวสาร</div>
             ${isAdmin ? `<button class="btn btn-sm" onclick="showAddAnn()">+ เพิ่มประกาศ</button>` : ''}
         </div>`;
 
-    if (error || !anns || !anns.length) {
+    if (annErr || !anns || !anns.length) {
         html += `<div class="empty-state">ยังไม่มีประกาศ</div>`;
     } else {
         anns.forEach(a => {
@@ -426,7 +520,7 @@ async function renderHome() {
                         <span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
                         <button class="btn btn-outline btn-xs" style="padding:1px 6px;" onclick="previewFile('${f.id}')">ดูไฟล์</button>
                         <button class="btn btn-xs" style="padding:1px 6px;" onclick="downloadFile('${f.id}')">ดาวน์โหลดไฟล์</button>
-                        ${isAdmin ? `<button class="btn btn-danger btn-xs" style="padding:1px 6px;" onclick="deleteFile('${f.id}')">✕ ลบ</button>` : ''}
+                        ${isAdmin ? `<button class="btn btn-danger btn-xs" style="padding:1px 6px;" onclick="deleteFile('${f.id}')">ลบไฟล์</button>` : ''}
                     </div>`;
                 });
                 html += `</div>`;
@@ -442,9 +536,95 @@ async function renderHome() {
             html += `</div>`;
         });
     }
-    document.getElementById('page-content').innerHTML = html + `</div>`;
+    html += `</div>`;
+
+    // ===================== DASHBOARD =====================
+
+    // --- คู่มือ/ความรู้ใหม่ ---
+    const kShow = _dashKnowledgeAll.slice(0, 3);
+    const kHasMore = _dashKnowledgeAll.length > 3;
+
+    html += `<div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+        <div class="card-header" style="padding:12px 16px;">
+            <div class="card-title">📚 คู่มือ / ความรู้ใหม่ล่าสุด</div>
+        </div>
+        <div id="dash-knowledge-list">`;
+
+    if (kShow.length === 0) {
+        html += `<div class="empty-state" style="padding:16px;">ยังไม่มีเอกสาร</div>`;
+    } else {
+        kShow.forEach(f => { html += renderDashboardFileItem(f, 'knowledge'); });
+    }
+    html += `</div>`;
+    if (kHasMore) {
+        html += `<div id="dash-knowledge-more" onclick="showDashMore('knowledge')"
+            style="text-align:center;padding:10px;font-size:13px;color:var(--text2);cursor:pointer;border-top:0.5px solid var(--border);">
+            โหลดเพิ่มเติม →</div>`;
+    }
+    html += `</div>`;
+
+    // --- เอกสารฝ่ายใหม่ ---
+    const dShow = _dashDeptAll.slice(0, 3);
+    const dHasMore = _dashDeptAll.length > 3;
+
+    html += `<div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+        <div class="card-header" style="padding:12px 16px;">
+            <div class="card-title">📄 เอกสารใหม่ฝ่ายต่างๆ</div>
+        </div>
+        <div id="dash-dept-list">`;
+
+    if (dShow.length === 0) {
+        html += `<div class="empty-state" style="padding:16px;">ยังไม่มีเอกสาร</div>`;
+    } else {
+        dShow.forEach(f => { html += renderDashboardFileItem(f, 'dept'); });
+    }
+    html += `</div>`;
+    if (dHasMore) {
+        html += `<div id="dash-dept-more" onclick="showDashMore('dept')"
+            style="text-align:center;padding:10px;font-size:13px;color:var(--text2);cursor:pointer;border-top:0.5px solid var(--border);">
+            โหลดเพิ่มเติม →</div>`;
+    }
+    html += `</div>`;
+
+    // --- ฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด ---
+    const deptCount = {};
+    (logData || []).forEach(l => {
+        // ดึงชื่อฝ่ายจาก action เช่น "ดูไฟล์: xxx" หรือ "ดาวน์โหลด: xxx"
+        const match = l.action?.match(/ฝ่าย\s*([^\s·:]+)/);
+        if (match) deptCount[match[1]] = (deptCount[match[1]] || 0) + 1;
+    });
+    const topDepts = Object.entries(deptCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const maxCount = topDepts[0]?.[1] || 1;
+
+    html += `<div class="card" style="padding:0;overflow:hidden;">
+        <div class="card-header" style="padding:12px 16px;">
+            <div class="card-title">🏆 ฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด</div>
+            <span style="font-size:11px;color:var(--text2);">30 วันล่าสุด</span>
+        </div>
+        <div style="padding:4px 16px 8px;">`;
+
+    if (topDepts.length === 0) {
+        html += `<div class="empty-state" style="padding:16px;">ยังไม่มีข้อมูลการใช้งาน</div>`;
+    } else {
+        topDepts.forEach(([dept, count], i) => {
+            const pct = Math.round((count / maxCount) * 100);
+            html += `<div onclick="navigate('dept','${escHtml(dept)}')"
+                style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--border);cursor:pointer;">
+                <span style="font-size:13px;font-weight:500;color:var(--text2);min-width:18px;">${i + 1}</span>
+                <span style="font-size:13px;flex:1;">ฝ่าย ${escHtml(dept)}</span>
+                <div style="width:80px;height:6px;background:var(--border);border-radius:99px;overflow:hidden;">
+                    <div style="height:100%;width:${pct}%;background:#1D9E75;border-radius:99px;"></div>
+                </div>
+                <span style="font-size:12px;color:var(--text2);min-width:50px;text-align:right;">${count} ครั้ง</span>
+            </div>`;
+        });
+    }
+    html += `</div></div>`;
+
+    content.innerHTML = html;
 }
 
+// ==================== ANNOUNCEMENTS ====================
 function showAddAnn() {
     showModal('เพิ่มประกาศ',
         `<div class="form-group">
@@ -724,7 +904,7 @@ function renderFileTable(files, isAdmin, section, folder, subfolder, page = 0) {
     let loadMore = '';
     if (files.length === PAGE_SIZE) {
         loadMore = `<div style="text-align:center;margin-top:12px;">
-            <button class="btn btn-outline" onclick="loadMoreFiles('${section}','${folder || ''}','${subfolder || ''}',${page + 1})">
+            <button class="btn btn-sm" onclick="loadMoreFiles('${section}','${folder || ''}','${subfolder || ''}',${page + 1})">
                 โหลดเพิ่มเติม...
             </button>
         </div>`;
@@ -765,7 +945,7 @@ async function loadMoreFiles(section, folder, subfolder, page) {
 
     if (loadMoreBtn) {
         if (files.length === PAGE_SIZE) {
-            loadMoreBtn.innerHTML = `<button class="btn btn-outline" onclick="loadMoreFiles('${section}','${folder}','${subfolder}',${page + 1})">โหลดเพิ่มเติม...</button>`;
+            loadMoreBtn.innerHTML = `<button class="btn btn-sm" onclick="loadMoreFiles('${section}','${folder}','${subfolder}',${page + 1})">โหลดเพิ่มเติม...</button>`;
         } else {
             loadMoreBtn.remove();
         }
@@ -839,8 +1019,8 @@ document.addEventListener('change', (e) => {
 // ==================== RENAME FILE ====================
 async function renameFile(id, currentName) {
     const decoded = currentName
-        .replace(/\\'/g, "'").replace(/&amp;/g,'&')
-        .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');
+        .replace(/\\'/g, "'").replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
     const ext = decoded.split('.').pop().toLowerCase();
     const nameWithoutExt = decoded.slice(0, decoded.lastIndexOf('.'));
 
@@ -858,22 +1038,17 @@ async function renameFile(id, currentName) {
                 const newName = document.getElementById('rename-input').value.trim();
                 if (!newName) { showToast('กรุณากรอกชื่อไฟล์', 'error'); return; }
                 const fullName = `${newName}.${ext}`;
-
-                const { error } = await window.supabaseClient
-                    .from('files').update({ name: fullName }).eq('id', id);
-
+                const { error } = await window.supabaseClient.from('files').update({ name: fullName }).eq('id', id);
                 if (error) { showToast('แก้ไขชื่อไม่สำเร็จ: ' + error.message, 'error'); return; }
                 addLog('edit', currentUser.username, `เปลี่ยนชื่อ: ${decoded} → ${fullName}`);
                 closeModal();
                 showToast('เปลี่ยนชื่อสำเร็จ', 'success');
-
                 const row = document.querySelector(`tr[data-file-id="${id}"]`);
                 if (row) {
-                    const isAdmin = currentUser.role === 'admin';
                     const nameCell = row.cells[isAdmin ? 3 : 2];
                     if (nameCell) { nameCell.textContent = fullName; nameCell.title = fullName; }
                     const renameBtn = row.querySelector('[onclick^="renameFile"]');
-                    if (renameBtn) renameBtn.setAttribute('onclick', `renameFile('${id}','${escHtml(fullName).replace(/'/g,"\\'")}') `);
+                    if (renameBtn) renameBtn.setAttribute('onclick', `renameFile('${id}','${escHtml(fullName).replace(/'/g, "\\'")}') `);
                 }
             }}
         ]
@@ -1130,7 +1305,6 @@ async function confirmUpload(section, folder) {
             });
 
             updateProgressToast(fileLabel, 5);
-
             const safeName = item.name.replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_').replace(/_+/g, '_') || 'file';
             const fileName = `${Date.now()}_${safeName}`;
             const needsWatermark = ['pdf', 'png', 'jpg', 'jpeg'].includes(item.ext);
@@ -1233,15 +1407,12 @@ function removeProgressToast() {
     }
 }
 
-// ==================== SIGNED URL (สำหรับ private bucket) ====================
+// ==================== SIGNED URL ====================
 async function getSignedUrl(fileUrl) {
     const fileName = decodeURIComponent(fileUrl.split('/').pop());
     const { data, error } = await window.supabaseClient.storage
         .from('edms-file').createSignedUrl(fileName, 300);
-    if (error) {
-        // fallback: ใช้ public URL ถ้า signed URL ล้มเหลว
-        return fileUrl;
-    }
+    if (error) return fileUrl;
     return data.signedUrl;
 }
 
@@ -1250,7 +1421,7 @@ async function previewFile(id) {
     const { data: f } = await window.supabaseClient.from('files').select('*').eq('id', id).single();
     if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
 
-    addLog('view', currentUser.username, `ดูไฟล์: ${f.name}`);
+    addLog('view', currentUser.username, `ดูไฟล์: ${f.name} · ฝ่าย ${f.folder || ''}`);
     document.getElementById('preview-title').textContent = f.name;
     const frame = document.getElementById('preview-frame');
     const ext = f.name.split('.').pop().toLowerCase();
@@ -1274,7 +1445,7 @@ async function previewFile(id) {
 async function downloadFile(id) {
     const { data: f } = await window.supabaseClient.from('files').select('*').eq('id', id).single();
     if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
-    addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name}`);
+    addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name} · ฝ่าย ${f.folder || ''}`);
     try {
         showToast('⏳ กำลังดาวน์โหลด...', '');
         const signedUrl = await getSignedUrl(f.file_url);
@@ -1355,7 +1526,7 @@ async function renderUsers() {
     document.getElementById('page-content').innerHTML = html;
 }
 
-// ==================== USER MANAGEMENT via Edge Function ====================
+// ==================== USER MANAGEMENT ====================
 const EDGE_FN_URL = `${supabaseUrl}/functions/v1/manage-user`;
 
 async function callManageUser(action, payload) {
@@ -1601,7 +1772,6 @@ async function applyPdfWatermark(dataUrl, callback, wmConfig) {
 
         for (const page of pages) {
             const { width, height } = page.getSize();
-
             if (embeddedImage) {
                 const imgDims = embeddedImage.scale(1);
                 const scale = Math.min((width * 0.75) / imgDims.width, (height * 0.75) / imgDims.height);
@@ -1610,16 +1780,12 @@ async function applyPdfWatermark(dataUrl, callback, wmConfig) {
                 page.drawImage(embeddedImage, {
                     x: (width / 2) - (w / 2) * Math.cos(Math.PI / 6) + (h / 2) * Math.sin(Math.PI / 6),
                     y: (height / 2) - (h / 2) * Math.cos(Math.PI / 6) - (w / 2) * Math.sin(Math.PI / 6),
-                    width: w, height: h,
-                    rotate: PDFLib.degrees(30),
-                    opacity: 0.08,
+                    width: w, height: h, rotate: PDFLib.degrees(30), opacity: 0.08,
                 });
             }
-
             if (wmText.trim()) {
                 const canvas = document.createElement('canvas');
-                canvas.width = width * 2;
-                canvas.height = height * 2;
+                canvas.width = width * 2; canvas.height = height * 2;
                 const ctx = canvas.getContext('2d');
                 ctx.scale(2, 2);
                 drawTextWatermarkFull(ctx, width, height, wmText.trim());
@@ -1628,7 +1794,6 @@ async function applyPdfWatermark(dataUrl, callback, wmConfig) {
                 page.drawImage(embeddedText, { x: 0, y: 0, width, height });
             }
         }
-
         const pdfBytes = await pdfDoc.saveAsBase64({ dataUri: true });
         callback(pdfBytes);
     } catch (err) {
@@ -1647,8 +1812,7 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
         img.src = dataUrl;
         img.onload = () => {
             const canvas = document.createElement('canvas');
-            canvas.width = img.width;
-            canvas.height = img.height;
+            canvas.width = img.width; canvas.height = img.height;
             const ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0);
 
@@ -1663,19 +1827,15 @@ function applyImageWatermark(dataUrl, callback, wmConfig) {
                     ctx.save();
                     ctx.globalAlpha = 0.08;
                     const scale = Math.min((img.width * 0.75) / logo.width, (img.height * 0.75) / logo.height);
-                    const drawW = logo.width * scale;
-                    const drawH = logo.height * scale;
                     ctx.translate(img.width / 2, img.height / 2);
                     ctx.rotate(-Math.PI / 6);
-                    ctx.drawImage(logo, -drawW / 2, -drawH / 2, drawW, drawH);
+                    ctx.drawImage(logo, -(logo.width * scale) / 2, -(logo.height * scale) / 2, logo.width * scale, logo.height * scale);
                     ctx.restore();
                     finish();
                 };
                 logo.onerror = () => finish();
                 logo.src = wmData;
-            } else {
-                finish();
-            }
+            } else { finish(); }
         };
         img.onerror = () => callback(dataUrl);
     };
