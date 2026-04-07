@@ -589,9 +589,11 @@ async function renderHome() {
     // --- ฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด ---
     const deptCount = {};
     (logData || []).forEach(l => {
-        // ดึงชื่อฝ่ายจาก action เช่น "ดูไฟล์: xxx" หรือ "ดาวน์โหลด: xxx"
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const match = l.action?.match(/ฝ่าย\s*([^\s·:]+)/);
-        if (match) deptCount[match[1]] = (deptCount[match[1]] || 0) + 1;
+        if (match && !UUID_RE.test(match[1])) {
+        deptCount[match[1]] = (deptCount[match[1]] || 0) + 1;
+        }
     });
     const topDepts = Object.entries(deptCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
     const maxCount = topDepts[0]?.[1] || 1;
@@ -1423,7 +1425,8 @@ async function previewFile(id) {
     const { data: f } = await window.supabaseClient.from('files').select('*').eq('id', id).single();
     if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
 
-    addLog('view', currentUser.username, `ดูไฟล์: ${f.name} · ฝ่าย ${f.folder || ''}`);
+   const folderLabel = (f.section === 'announcement' || !f.folder) ? '' : ` · ฝ่าย ${f.folder}`;
+addLog('view', currentUser.username, `ดูไฟล์: ${f.name}${folderLabel}`);
     document.getElementById('preview-title').textContent = f.name;
     const frame = document.getElementById('preview-frame');
     const ext = f.name.split('.').pop().toLowerCase();
@@ -1447,7 +1450,8 @@ async function previewFile(id) {
 async function downloadFile(id) {
     const { data: f } = await window.supabaseClient.from('files').select('*').eq('id', id).single();
     if (!f) { showToast('ไม่พบไฟล์', 'error'); return; }
-    addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name} · ฝ่าย ${f.folder || ''}`);
+    const folderLabel = (f.section === 'announcement' || !f.folder) ? '' : ` · ฝ่าย ${f.folder}`;
+addLog('download', currentUser.username, `ดาวน์โหลด: ${f.name}${folderLabel}`);
     try {
         showToast('⏳ กำลังดาวน์โหลด...', '');
         const signedUrl = await getSignedUrl(f.file_url);
