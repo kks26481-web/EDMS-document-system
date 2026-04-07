@@ -586,42 +586,8 @@ async function renderHome() {
     }
     html += `</div>`;
 
-    // --- ฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด ---
-    const deptCount = {};
-    (logData || []).forEach(l => {
-        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const match = l.action?.match(/ฝ่าย\s*([^\s·:]+)/);
-        if (match && !UUID_RE.test(match[1])) {
-        deptCount[match[1]] = (deptCount[match[1]] || 0) + 1;
-        }
-    });
-    const topDepts = Object.entries(deptCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    const maxCount = topDepts[0]?.[1] || 1;
-
-    html += `<div class="card" style="padding:0;overflow:hidden;">
-        <div class="card-header" style="padding:12px 16px;">
-            <div class="card-title">🏆 เอกสารฝ่ายที่ถูกดู/ดาวน์โหลดมากที่สุด</div>
-            <span style="font-size:11px;color:var(--text2);">30 วันล่าสุด</span>
-        </div>
-        <div style="padding:4px 16px 8px;">`;
-
-    if (topDepts.length === 0) {
-        html += `<div class="empty-state" style="padding:16px;">ยังไม่มีข้อมูลการใช้งาน</div>`;
-    } else {
-        topDepts.forEach(([dept, count], i) => {
-            const pct = Math.round((count / maxCount) * 100);
-            html += `<div onclick="navigate('dept','${escHtml(dept)}')"
-                style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--border);cursor:pointer;">
-                <span style="font-size:13px;font-weight:500;color:var(--text2);min-width:18px;">${i + 1}</span>
-                <span style="font-size:13px;flex:1;">ฝ่าย ${escHtml(dept)}</span>
-                <div style="width:80px;height:6px;background:var(--border);border-radius:99px;overflow:hidden;">
-                    <div style="height:100%;width:${pct}%;background:#1D9E75;border-radius:99px;"></div>
-                </div>
-                <span style="font-size:12px;color:var(--text2);min-width:50px;text-align:right;">${count} ครั้ง</span>
-            </div>`;
-        });
-    }
-    html += `</div></div>`;
+    
+    
 
     content.innerHTML = html;
 }
